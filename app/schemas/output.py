@@ -11,3 +11,20 @@ class FinalOutput(BaseModel):
     accommodation_info: Optional[Accommodation] = None  # 숙소 기본 정보
     cons: Optional[str] = None  # (선택) 아쉬운 점
     distance_info: Optional[dict[str, Any]] = None  # (확장) 거리, 이동시간
+
+
+
+class MapPoint(BaseModel):
+    """지도에 표시될 위치 (숙소/인프라/지역경험)"""
+    name: str
+    category: Literal["stay", "infra", "experience"]
+    latitude: float
+    longitude: float
+    description: Optional[str] = None
+
+
+class EvaluatedItem(BaseModel):
+    """이름, 별점, 짧은 설명 형식의 출력 항목"""
+    name: str
+    rating: Optional[float] = None
+    description: Optional[str] = None
