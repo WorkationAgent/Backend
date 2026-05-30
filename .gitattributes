@@ -1,0 +1,20 @@
+# 모든 텍스트 파일 줄바꿈 자동 통일
+* text=auto
+
+# Python 파일은 LF로 강제
+*.py text eol=lf
+
+# 설정/문서 파일
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.env text eol=lf
+
+# 바이너리 파일은 변환하지 않음
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
