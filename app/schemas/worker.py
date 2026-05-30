@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class LivingEvaluation(BaseModel):
     accommodation_id: str
     score: Optional[float] = None
+    confidence: Optional[float] = None
     summary: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
 
@@ -13,6 +14,7 @@ class LivingEvaluation(BaseModel):
 class LocalEvaluation(BaseModel):
     accommodation_id: str
     score: Optional[float] = None
+    confidence: Optional[float] = None
     summary: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
 
@@ -20,5 +22,6 @@ class LocalEvaluation(BaseModel):
 class WorkEvaluation(BaseModel):
     accommodation_id: str
     score: Optional[float] = None
+    confidence: Optional[float] = None
     summary: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
