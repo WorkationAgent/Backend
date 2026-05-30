@@ -1,3 +1,8 @@
+from __future__ import annotations
+from typing import Optional
+from pydantic import BaseModel
+
+
 class UserInput(BaseModel):
     purpose: Optional[str] = None
     duration: Optional[str] = None

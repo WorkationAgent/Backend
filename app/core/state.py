@@ -1,3 +1,11 @@
+from __future__ import annotations
+from typing import TypedDict, Dict, Any, List
+
+from app.schemas.user_input import UserInput
+from app.schemas.worker import WorkEvaluation, LivingEvaluation, LocalEvaluation
+from app.schemas.output import FinalOutput
+
+
 class GraphState(TypedDict):
     # 1. 사용자 원본 입력
     user_input: UserInput
@@ -10,9 +18,9 @@ class GraphState(TypedDict):
     priority_weights: Dict[str, float]
 
     # 3. Stay Agent 결과
-    candidate_regions: List[RegionCandidate]
-    selected_region: RegionCandidate
-    candidate_accommodations: List[Accommodation]
+    candidate_regions: List[Dict[str, Any]]
+    selected_region: Dict[str, Any]
+    candidate_accommodations: List[Dict[str, Any]]
 
     # 4. Sub Agent 평가 결과
     work_evaluations: List[WorkEvaluation]
