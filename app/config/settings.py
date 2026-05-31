@@ -14,7 +14,7 @@ OPENAI_EMBEDDING_MODEL: str = os.environ["OPENAI_EMBEDDING_MODEL"]
 
 # ── KTO (한국관광공사) ─────────────────────────────────────────
 KTO_API_KEY: str = os.environ["KTO_API_KEY"]
-KTO_BASE_URL: str = "http://apis.data.go.kr/B551011/KorService1"
+KTO_BASE_URL: str = "https://apis.data.go.kr/B551011/KorService2"
 
 # ── Kakao ─────────────────────────────────────────────────────
 KAKAO_REST_API_KEY: str = os.environ["KAKAO_REST_API_KEY"]
