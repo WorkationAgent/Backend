@@ -34,6 +34,7 @@ async def call_llm(
     output_schema: Optional[Type[T]] = None,
     max_tokens: int = 4096,
     use_cache: bool = True,
+    model: Optional[str] = None,
 ) -> Union[str, T]:
     """
     에이전트 공용 Claude 호출 함수.
@@ -53,7 +54,7 @@ async def call_llm(
     """
     # 모델명, 토큰 한도, 메시지를 기본 파라미터로 묶음
     create_kwargs: dict = dict(
-        model=LLM_MODEL,
+        model=model or LLM_MODEL,
         max_tokens=max_tokens,
         messages=messages,
     )
