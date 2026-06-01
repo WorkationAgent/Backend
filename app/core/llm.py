@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Optional, Type, TypeVar, Union
 
 import anthropic
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.config.settings import (
     ANTHROPIC_API_KEY,
@@ -13,94 +15,117 @@ from app.config.settings import (
     OPENAI_EMBEDDING_MODEL,
 )
 
-# Pydantic BaseModel을 상속한 클래스만 T로 사용할 수 있도록 제한
-# 예: WorkEvaluation, LivingEvaluation, LocalEvaluation 등
 T = TypeVar("T", bound=BaseModel)
 
-# ── Clients ───────────────────────────────────────────────────────────────────
-
-# Anthropic 비동기 클라이언트 — Claude 호출 전용
-# 모듈 로드 시 한 번만 생성하여 재사용 (커넥션 풀 유지)
 _anthropic = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-
-# OpenAI 비동기 클라이언트 — 임베딩 전용
-# Claude는 임베딩 API를 제공하지 않으므로 OpenAI를 별도로 사용
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
+# ── JSON 추출 헬퍼 ───────────────────────────────────────────────────
+_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+def _extract_json(text: str) -> str:
+    """LLM 응답에서 JSON 본문만 추출.
+```json 펜스나 앞뒤 설명 텍스트가 있어도 대응.
+    """
+    text = _FENCE_RE.sub("", text.strip()).strip()
+    # 첫 { 또는 [부터 시작
+    candidates = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+    if candidates:
+        text = text[min(candidates):]
+    # 마지막 } 또는 ]에서 끝
+    end = max(text.rfind("}"), text.rfind("]"))
+    if end >= 0:
+        text = text[: end + 1]
+    return text
+
+
+# ── 공용 호출 함수 ───────────────────────────────────────────────────
 async def call_llm(
     messages: list[dict],
     system: Optional[str] = None,
     output_schema: Optional[Type[T]] = None,
     max_tokens: int = 4096,
     use_cache: bool = True,
+    max_retries: int = 1,
 ) -> Union[str, T]:
+    """공용 Claude 호출.
+    
+    output_schema가 지정되면 JSON 모드로 호출하고 수동 파싱.
+    (구조화 출력의 'Schema too complex' 회피용.)
     """
-    에이전트 공용 Claude 호출 함수.
-
-    Args:
-        messages:       [{"role": "user", "content": "..."}] 형식의 대화 목록
-        system:         시스템 프롬프트 (에이전트별 역할 지시문)
-        output_schema:  반환받을 Pydantic 모델 클래스.
-                        넘기면 structured output으로 파싱된 인스턴스를 반환,
-                        None이면 텍스트(str)를 반환.
-        max_tokens:     Claude가 생성할 최대 토큰 수
-        use_cache:      True면 system prompt에 prompt caching 적용.
-                        동일한 시스템 프롬프트 반복 호출 시 비용 절감 (5분 TTL).
-
-    Returns:
-        output_schema가 있으면 해당 Pydantic 인스턴스, 없으면 str.
-    """
-    # 모델명, 토큰 한도, 메시지를 기본 파라미터로 묶음
     create_kwargs: dict = dict(
         model=LLM_MODEL,
         max_tokens=max_tokens,
-        messages=messages,
+        messages=list(messages),
     )
 
-    # 시스템 프롬프트가 있을 때만 system 파라미터 추가
     if system:
         system_block: dict = {"type": "text", "text": system}
         if use_cache:
-            # cache_control을 붙이면 Anthropic 서버가 이 블록을 캐싱함.
-            # 동일한 시스템 프롬프트로 반복 호출 시 입력 토큰 비용 ~90% 절감.
             system_block["cache_control"] = {"type": "ephemeral"}
         create_kwargs["system"] = [system_block]
 
-    # output_schema가 지정된 경우: structured output 모드
-    if output_schema is not None:
-        # messages.parse()는 Claude 응답을 output_schema Pydantic 모델로 자동 파싱.
-        # 응답이 스키마와 맞지 않으면 SDK가 재시도함.
-        response = await _anthropic.messages.parse(
-            output_format=output_schema,
-            **create_kwargs,
+    # 일반 텍스트 응답
+    if output_schema is None:
+        response = await _anthropic.messages.create(**create_kwargs)
+        return next(
+            (b.text for b in response.content if b.type == "text"), ""
         )
-        # parsed_output: output_schema 인스턴스 (예: WorkEvaluation)
-        return response.parsed_output  # type: ignore[return-value]
 
-    # output_schema가 없는 경우: 일반 텍스트 응답
-    response = await _anthropic.messages.create(**create_kwargs)
-    # Claude 응답은 content 리스트로 옴. 첫 번째 text 블록을 꺼내 반환.
-    # text 블록이 없으면 빈 문자열 반환.
-    return next(
-        (block.text for block in response.content if block.type == "text"), ""
+    # 구조화 응답: JSON 스키마 안내 + 수동 파싱
+    schema_str = json.dumps(
+        output_schema.model_json_schema(), ensure_ascii=False
+    )
+    augmented = list(create_kwargs["messages"])
+    last = augmented[-1]
+    augmented[-1] = {
+        **last,
+        "content": (
+            f"{last['content']}\n\n"
+            f"---\n"
+            f"**출력 형식**: 아래 JSON 스키마를 정확히 따르는 JSON만 출력.\n"
+            f"마크다운 코드블록(```), 설명, 부가 텍스트 절대 금지.\n\n"
+            f"스키마:\n{schema_str}"
+        ),
+    }
+    create_kwargs["messages"] = augmented
+
+    last_text = ""
+    last_error: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = await _anthropic.messages.create(**create_kwargs)
+            last_text = next(
+                (b.text for b in response.content if b.type == "text"), ""
+            )
+            return output_schema.model_validate_json(_extract_json(last_text))
+        except (ValidationError, json.JSONDecodeError) as e:
+            last_error = e
+            if attempt < max_retries:
+                # 실패한 응답을 보여주고 다시 시도
+                create_kwargs["messages"] = augmented + [
+                    {"role": "assistant", "content": last_text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "위 응답이 유효한 JSON이 아니어서 파싱 실패. "
+                            "오직 JSON만 다시 출력해주세요."
+                        ),
+                    },
+                ]
+
+    raise RuntimeError(
+        f"LLM JSON 파싱 {max_retries + 1}회 실패: {last_error}\n"
+        f"마지막 응답: {last_text[:500]}"
     )
 
 
+# ── 임베딩 (변경 없음) ────────────────────────────────────────────────
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """
-    텍스트 목록을 벡터로 변환 (RAG의 인덱싱 / 검색 단계에서 사용).
-
-    Args:
-        texts: 벡터로 변환할 텍스트 목록
-
-    Returns:
-        각 텍스트에 대응하는 float 벡터 목록.
-        벡터 DB(Chroma, Pinecone 등)에 저장하거나 유사도 계산에 활용.
-    """
     response = await _openai.embeddings.create(
         model=OPENAI_EMBEDDING_MODEL,
         input=texts,
     )
-    # response.data는 임베딩 객체 리스트 — .embedding 속성이 실제 벡터(float 리스트)
     return [item.embedding for item in response.data]
