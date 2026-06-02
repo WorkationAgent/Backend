@@ -12,7 +12,7 @@ from app.config.settings import (
     SEARCH_RADIUS_CAR_SPEED_KMH,
     SEARCH_RADIUS_WALK_KM,
 )
-from app.tools.distance_util import calc_distance_km, calc_walk_minutes
+from app.tools.geo import haversine_km as calc_distance_km, walk_minutes as calc_walk_minutes
 
 # 장소 유형별 편의시설 추정값
 # (wifi, outlet, long_stay, quiet, large_table, pet_friendly, craft_allowed, parking)
