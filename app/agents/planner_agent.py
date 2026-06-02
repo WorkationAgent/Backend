@@ -25,7 +25,10 @@ from app.agents.living_agent import living_agent
 from app.agents.local_agent import evaluate_accommodations
 from app.agents.stay_agent import accommodation_search_node, region_search_node
 from app.agents.work_agent import work_agent
+from app.core.llm import call_llm
 from app.core.state import GraphState
+from app.prompts.planner_prompts import FINAL_OUTPUT_SYSTEM, build_final_output_user
+from app.schemas.output import FinalOutput
 
 
 # ── 정규화 ────────────────────────────────────────────────────────────────────
@@ -79,7 +82,7 @@ async def planner_phase1(state: GraphState) -> dict:
     TODO: UserInput → parsed_preferences / must_have_conditions 등 5개 조건
           해석 LLM 호출을 여기에 추가 (현재는 호출자가 state에 미리 채워야 함).
     """
-    return region_search_node(state)
+    return await region_search_node(state)
 
 
 # ── Phase 2: 숙소 검색 → 정규화 → 평가 ──────────────────────────────────────
@@ -88,7 +91,7 @@ async def planner_phase2(state: GraphState) -> dict:
     """숙소 검색부터 최종 평가까지 전체를 조율한다."""
 
     # 1. Stay Agent: 숙소 검색
-    acc_result = accommodation_search_node(state)
+    acc_result = await accommodation_search_node(state)
     state = {**state, **acc_result}
 
     # 2. 정규화: mapx/mapy → latitude/longitude
@@ -127,15 +130,105 @@ async def planner_phase2(state: GraphState) -> dict:
                          "candidate_accommodations"):
                 merged[k] = v
 
-    # TODO: integrate_scores — 세 agent 점수를 가중 합산하여 ranked_recommendations 생성
+    # 4. 최종 추천 순위 생성
+    try:
+        final_output = await build_final_output(
+            normalized=normalized,
+            work_evals=merged.get("work_evaluations", []),
+            living_evals=merged.get("living_evaluations", []),
+            local_evals=merged.get("local_evaluations", []),
+            state=state,
+        )
+        merged["final_user_output"] = final_output
+    except Exception as e:
+        errors.append(f"planner: build_final_output 실패 — {e}")
 
     return {**merged, "errors": errors, "warnings": warnings, "retry_count": retry_count}
+
+
+# ── 최종 출력 생성 ────────────────────────────────────────────────────────────
+
+def _assemble_accommodations_data(
+    normalized: list[dict],
+    work_evals: list,
+    living_evals: list,
+    local_evals: list,
+) -> list[dict]:
+    """accommodation_id 기준으로 평가 결과를 숙소 정보에 합산."""
+    work_map   = {e.accommodation_id: e for e in work_evals}
+    living_map = {e.accommodation_id: e for e in living_evals}
+    local_map  = {e.accommodation_id: e for e in local_evals}
+
+    result = []
+    for acc in normalized:
+        acc_id = acc.get("id", "")
+        w = work_map.get(acc_id)
+        l = living_map.get(acc_id)
+        lo = local_map.get(acc_id)
+
+        result.append({
+            "accommodation_id": acc_id,
+            "name":             acc.get("name", ""),
+            "address":          acc.get("address"),
+            "latitude":         acc.get("latitude"),
+            "longitude":        acc.get("longitude"),
+            "stay_score":       acc.get("stay_score"),
+            "stay_reason":      acc.get("stay_reason"),
+            "homepage":         acc.get("homepage"),
+            "tel":              acc.get("tel"),
+            "work_eval": {
+                "score":      w.score      if w else None,
+                "confidence": w.confidence if w else None,
+                "summary":    w.summary    if w else None,
+                "details":    w.details    if w else {},
+            },
+            "living_eval": {
+                "score":      l.score      if l else None,
+                "confidence": l.confidence if l else None,
+                "summary":    l.summary    if l else None,
+                "details":    l.details    if l else {},
+            },
+            "local_eval": {
+                "score":      lo.score      if lo else None,
+                "confidence": lo.confidence if lo else None,
+                "summary":    lo.summary    if lo else None,
+                "details":    lo.details.model_dump() if lo and lo.details else {},
+            },
+        })
+    return result
+
+
+async def build_final_output(
+    normalized: list[dict],
+    work_evals: list,
+    living_evals: list,
+    local_evals: list,
+    state: GraphState,
+) -> FinalOutput:
+    """세 Agent 평가 결과를 LLM에 전달해 최종 추천 순위를 생성한다."""
+    accommodations_data = _assemble_accommodations_data(
+        normalized, work_evals, living_evals, local_evals
+    )
+
+    user_msg = build_final_output_user(
+        accommodations_data=accommodations_data,
+        must_have_conditions=state.get("must_have_conditions") or [],
+        priority_weights=state.get("priority_weights") or {},
+        parsed_preferences=state.get("parsed_preferences") or {},
+        selected_region=state.get("selected_region", {}).get("region_name", ""),
+    )
+
+    return await call_llm(
+        messages=[{"role": "user", "content": user_msg}],
+        system=FINAL_OUTPUT_SYSTEM,
+        output_schema=FinalOutput,
+    )
 
 
 # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
 
 async def _call_work(state: GraphState, normalized: list[dict]) -> dict:
-    result = work_agent({**state, "candidate_accommodations": normalized})
+    result = await work_agent({**state, "candidate_accommodations": normalized})
     return {
         "work_evaluations": result.get("work_evaluations", []),
         "warnings":         result.get("warnings", []),
