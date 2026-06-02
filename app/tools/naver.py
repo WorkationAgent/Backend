@@ -33,6 +33,8 @@ async def search_blog(query: str, display: int = 5) -> list[NaverBlogPost]:
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(NAVER_SEARCH_URL, headers=headers, params=params)
+        if r.status_code == 429:
+            return []
         r.raise_for_status()
         data = r.json()
 
