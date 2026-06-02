@@ -307,7 +307,7 @@ async def test_null_user_input(
 
     # Work Agent — user_input에서 work_required/work_style/transport 읽음, 이 값들이 null
     try:
-        work_result = work_agent(sparse_state)
+        work_result = await work_agent(sparse_state)
         work_evals = work_result.get("work_evaluations", [])
         print(f"\n  ✅ Work Agent: {len(work_evals)}개 숙소 평가 완료")
         for ev in work_evals:
@@ -480,70 +480,6 @@ async def test_full_pipeline(raw_text: str) -> None:
         print(f"\n  ⚠  FinalOutput 생성 실패: {e}")
 
 
-# ── Test 3: planner_phase2 통합 테스트 ───────────────────────
-
-async def test_planner_phase2(selected_region: dict) -> None:
-    section("Test 3: planner_phase2 — 숙소 검색 → 정규화 → 평가 → 최종 출력")
-
-    from app.agents.planner_agent import planner_phase2
-
-    user_input = UserInput(
-        purpose=FAKE_STATE["parsed_preferences"].get("purpose"),
-        duration=FAKE_STATE["parsed_preferences"].get("duration"),
-        desired_region=FAKE_STATE["parsed_preferences"].get("desired_region"),
-        desired_vibe=FAKE_STATE["parsed_preferences"].get("desired_vibe"),
-        tourism_hobby=FAKE_STATE["parsed_preferences"].get("tourism_hobby"),
-        work_required=FAKE_STATE["parsed_preferences"].get("work_required"),
-        work_style=FAKE_STATE["parsed_preferences"].get("work_style"),
-        transport=FAKE_STATE["parsed_preferences"].get("transport"),
-        living_infra=FAKE_STATE["parsed_preferences"].get("living_infra"),
-        companion=FAKE_STATE["parsed_preferences"].get("companion"),
-    )
-
-    state = {
-        **FAKE_STATE,
-        "user_input":      user_input,
-        "selected_region": selected_region,
-        "retry_count":     {},
-        "errors":          [],
-    }
-
-    result = await planner_phase2(state)
-
-    errors = result.get("errors", [])
-    if errors:
-        print(f"\n  ⚠  errors: {errors}")
-
-    # 정규화 확인
-    normalized = result.get("normalized_accommodations", [])
-    print(f"\n  정규화된 숙소 수: {len(normalized)}")
-    for acc in normalized:
-        print(f"  - {acc['name']}  lat={acc['latitude']}  lng={acc['longitude']}")
-
-    # 각 agent 평가 확인
-    for key, label in [
-        ("work_evaluations",   "Work"),
-        ("living_evaluations", "Living"),
-        ("local_evaluations",  "Local"),
-    ]:
-        evals = result.get(key, [])
-        print(f"\n  {label} Agent: {len(evals)}개 숙소 평가")
-        for ev in evals:
-            print(f"  - {ev.accommodation_id}  score={ev.score}  confidence={ev.confidence}")
-
-    # 최종 출력 확인
-    final = result.get("final_user_output")
-    if final:
-        print(f"\n  ✅ FinalOutput 생성 완료")
-        print(f"  추천 지역: {final.recommended_region}")
-        print(f"  사용자 조건 충족: {final.matched_conditions}")
-        for ranked in final.ranked_accommodations:
-            print(f"\n  [{ranked.rank}위] {ranked.name}  total_score={ranked.total_score}")
-            print(f"  work:   {ranked.work_summary}")
-            print(f"  living: {ranked.living_summary}")
-            print(f"  local:  {ranked.local_summary}")
-    else:
-        print("\n  ❌ FinalOutput 생성 실패")
 
 
 async def main() -> None:
@@ -566,10 +502,7 @@ async def main() -> None:
     candidates = await run_stay_phase1()
     selected = candidates[0]
 
-    # Test 3: planner_phase2 직접 호출 (accommodation_search 포함)
-    await test_planner_phase2(selected)
-
-    # Stay Phase 2 (기존 단계별 확인용)
+    # Stay Phase 2
     raw_accommodations = await run_stay_phase2(selected)
 
     if not raw_accommodations:
@@ -588,7 +521,7 @@ async def main() -> None:
     # Living → Work → Local 순차 실행
     for coro in [
         run_living(accommodations),
-        run_work(raw_accommodations, selected),
+        run_work(accommodations, selected),
         run_local(accommodations),
     ]:
         try:
@@ -602,18 +535,8 @@ async def main() -> None:
     await test_null_user_input(raw_accommodations, accommodations, selected)
 
 
-async def run_test3() -> None:
-    """Test 3만 단독 실행."""
-    candidates = await run_stay_phase1()
-    await test_planner_phase2(candidates[0])
-
-
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    target = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if target == "test3":
-        asyncio.run(run_test3())
-    else:
-        asyncio.run(main())
+    asyncio.run(main())
