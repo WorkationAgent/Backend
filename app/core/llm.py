@@ -4,6 +4,7 @@ import json
 import re
 from typing import Optional, Type, TypeVar, Union
 
+import anthropic as _anthropic_sdk
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from openai import AsyncOpenAI
@@ -19,6 +20,7 @@ from app.config.settings import (
 T = TypeVar("T", bound=BaseModel)
 
 _anthropic = ChatAnthropic(model=LLM_MODEL, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
+_anthropic_raw = _anthropic_sdk.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -128,7 +130,7 @@ async def call_llm_with_tools(
 
     collected: list = []
     for _ in range(max_rounds):
-        resp = await _anthropic.messages.create(**create_kwargs)
+        resp = await _anthropic_raw.messages.create(**create_kwargs)
         create_kwargs["messages"].append({"role": "assistant", "content": resp.content})
         if resp.stop_reason != "tool_use":
             break
