@@ -122,6 +122,51 @@ async def call_llm(
     )
 
 
+# ── Tool Use 루프 (하이브리드 보강 단계용) ───────────────────────────
+async def call_llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    tool_executor,
+    system: Optional[str] = None,
+    max_rounds: int = 3,
+    max_tokens: int = 2048,
+) -> list:
+    """Tool use 루프. LLM이 tool을 부르면 실행 결과를 다시 넣어 반복.
+    max_rounds 도달하거나 LLM이 더 이상 tool을 부르지 않으면 종료.
+
+    tool_executor(name, input) → (LLM에 보여줄 요약 str, 우리가 수집할 payload)
+    반환: 수집된 payload 리스트 (각 tool_use 호출당 1개).
+    """
+    create_kwargs: dict = dict(
+        model=LLM_MODEL,
+        max_tokens=max_tokens,
+        messages=list(messages),
+        tools=tools,
+    )
+    if system:
+        create_kwargs["system"] = [{"type": "text", "text": system}]
+
+    collected: list = []
+    for _ in range(max_rounds):
+        resp = await _anthropic.messages.create(**create_kwargs)
+        create_kwargs["messages"].append({"role": "assistant", "content": resp.content})
+        if resp.stop_reason != "tool_use":
+            break
+        tool_results = []
+        for block in resp.content:
+            if block.type == "tool_use":
+                summary, payload = await tool_executor(block.name, block.input)
+                collected.append(payload)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": summary,
+                })
+        create_kwargs["messages"].append({"role": "user", "content": tool_results})
+
+    return collected
+
+
 # ── 임베딩 (변경 없음) ────────────────────────────────────────────────
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
     response = await _openai.embeddings.create(
