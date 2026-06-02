@@ -9,12 +9,14 @@ Work Agent는 미구현으로 제외
 import asyncio
 import json
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agents.stay_agent import region_search_node, accommodation_search_node
 from app.agents.living_agent import living_agent
 from app.agents.local_agent import evaluate_accommodations
 from app.agents.work_agent import work_agent
 from app.schemas.user_input import UserInput
+from app.schemas.worker import LivingEvaluation
 
 # ── 가짜 Planner 출력 데이터 ───────────────────────────────────
 FAKE_STATE = {
@@ -210,9 +212,140 @@ async def run_local(accommodations: list[dict]) -> None:
         print(f"  summary:    {r.summary}")
 
 
+# ── Test 1: confidence 낮을 때 재호출 (Mock) ──────────────────
+
+async def test_confidence_retry() -> None:
+    section("Test 1: Confidence ≤ 54 → Living Agent 재호출 확인 (Mock)")
+
+    fake_accommodations = [
+        {"id": "mock-001", "name": "제주 테스트 숙소", "latitude": 33.4890, "longitude": 126.4983},
+    ]
+    state = {**FAKE_STATE, "candidate_accommodations": fake_accommodations, "retry_count": {}}
+
+    call_count = {"process": 0}
+
+    async def fake_process(acc, *_):
+        call_count["process"] += 1
+        if call_count["process"] == 1:
+            return LivingEvaluation(
+                accommodation_id=acc.get("id", ""),
+                score=45.0,
+                confidence=30.0,  # RETRY_CONFIDENCE_THRESHOLD(54) 이하 → 재호출 트리거
+                summary="첫 평가 — 정보 부족으로 신뢰도 낮음",
+            )
+        return LivingEvaluation(
+            accommodation_id=acc.get("id", ""),
+            score=72.0,
+            confidence=78.0,
+            summary="재호출 후 평가 — 추가 탐색으로 신뢰도 개선",
+        )
+
+    with patch("app.agents.living_agent._plan_search", new_callable=AsyncMock) as mock_plan, \
+         patch("app.agents.living_agent._process", side_effect=fake_process):
+        mock_plan.return_value = MagicMock()
+        result = await living_agent(state)
+
+    evals = result.get("living_evaluations", [])
+    retry_count = result.get("retry_count", {})
+
+    print(f"\n  _process 총 호출 횟수: {call_count['process']}  (기대: 2)")
+    print(f"  retry_count: {retry_count}  (기대: {{'living': 1}})")
+    for ev in evals:
+        print(f"  숙소: {ev.accommodation_id}")
+        print(f"  score: {ev.score}  confidence: {ev.confidence}")
+        print(f"  summary: {ev.summary}")
+
+    assert call_count["process"] == 2, f"재호출 미발생 (호출 횟수: {call_count['process']})"
+    assert retry_count.get("living") == 1, "retry_count['living'] 가 1이 아님"
+    assert evals[0].confidence == 78.0, "재호출 결과가 반영되지 않음"
+    print("\n  ✅ PASS — confidence 낮을 때 재호출 정상 동작")
+
+
+# ── Test 2: UserInput null 필드 → 전체 실행 확인 ─────────────
+
+async def test_null_user_input(
+    raw_accommodations: list[dict],
+    accommodations: list[dict],
+    selected_region: dict,
+) -> None:
+    section("Test 2: UserInput null 필드 포함 — Work + Local Agent 전체 실행")
+
+    # UserInput: desired_region만 있고 나머지(transport, work_style, vibe 등)는 null
+    sparse_input = UserInput(
+        desired_region=FAKE_STATE["parsed_preferences"].get("desired_region"),
+    )
+
+    set_fields = [k for k, v in sparse_input.model_dump().items() if v is not None]
+    none_fields = [k for k, v in sparse_input.model_dump().items() if v is None]
+    print(f"\n  설정된 필드 ({len(set_fields)}개): {set_fields}")
+    print(f"  None 필드  ({len(none_fields)}개): {none_fields}")
+
+    # Planner 출력(필수 조건 3종)은 항상 보장, user_input만 sparse
+    sparse_state = {
+        "parsed_preferences": FAKE_STATE["parsed_preferences"],
+        "must_have_conditions": FAKE_STATE["must_have_conditions"],
+        "avoid_conditions": FAKE_STATE["avoid_conditions"],
+        "preference_conditions": FAKE_STATE["preference_conditions"],
+        "priority_weights": FAKE_STATE["priority_weights"],
+        "user_input": sparse_input,
+        "candidate_accommodations": raw_accommodations,
+        "selected_region": selected_region,
+        "retry_count": {},
+        "errors": [],
+    }
+
+    # Living Agent — parsed_preferences 기반 판단, sparse user_input 영향 확인
+    try:
+        living_result = await living_agent(sparse_state)
+        living_evals = living_result.get("living_evaluations", [])
+        print(f"\n  ✅ Living Agent: {len(living_evals)}개 숙소 평가 완료")
+        for ev in living_evals:
+            print(f"  숙소: {ev.accommodation_id}  score: {ev.score}  confidence: {ev.confidence}")
+    except Exception as e:
+        print(f"\n  ❌ Living Agent 오류: {e}")
+
+    # Work Agent — user_input에서 work_required/work_style/transport 읽음, 이 값들이 null
+    try:
+        work_result = work_agent(sparse_state)
+        work_evals = work_result.get("work_evaluations", [])
+        print(f"\n  ✅ Work Agent: {len(work_evals)}개 숙소 평가 완료")
+        for ev in work_evals:
+            print(f"  숙소: {ev.accommodation_id}  score: {ev.score}  confidence: {ev.confidence}")
+    except Exception as e:
+        print(f"\n  ❌ Work Agent 오류: {e}")
+
+    # Local Agent — user_input에서 desired_vibe/tourism_hobby/companion 읽음, 이 값들이 null
+    try:
+        local_results = await evaluate_accommodations(accommodations, sparse_input)
+        print(f"\n  ✅ Local Agent: {len(local_results)}개 숙소 평가 완료")
+        for r in local_results:
+            print(f"  숙소: {r.accommodation_id}  score: {r.score}  confidence: {r.confidence}")
+    except Exception as e:
+        print(f"\n  ❌ Local Agent 오류: {e}")
+
+
 # ── 메인 ──────────────────────────────────────────────────────
 
+# test_null_user_input 용 fallback (Stay Agent 숙소 검색 실패 시 사용)
+_FALLBACK_RAW = [
+    {"id": "fallback-001", "name": "세화 게스트하우스", "address": "제주 구좌읍 세화리",
+     "mapx": "126.8676", "mapy": "33.5497", "total_score": 80, "brief_reason": "테스트용"},
+    {"id": "fallback-002", "name": "세화 독채펜션", "address": "제주 구좌읍 세화4길",
+     "mapx": "126.8712", "mapy": "33.5510", "total_score": 75, "brief_reason": "테스트용"},
+]
+_FALLBACK_NORMALIZED = [
+    {"id": "fallback-001", "name": "세화 게스트하우스", "address": "제주 구좌읍 세화리",
+     "latitude": 33.5497, "longitude": 126.8676, "region": "제주 구좌읍 세화리 생활권"},
+    {"id": "fallback-002", "name": "세화 독채펜션", "address": "제주 구좌읍 세화4길",
+     "latitude": 33.5510, "longitude": 126.8712, "region": "제주 구좌읍 세화리 생활권"},
+]
+_FALLBACK_REGION = {"region_name": "제주 구좌읍 세화리 생활권", "rank": 1}
+
+
 async def main() -> None:
+    # Test 1은 완전히 독립적 — Stay Agent 결과 불필요
+    await test_confidence_retry()
+
     # Stay Phase 1
     candidates = run_stay_phase1()
     selected = candidates[0]
@@ -221,19 +354,19 @@ async def main() -> None:
     raw_accommodations = run_stay_phase2(selected)
 
     if not raw_accommodations:
-        print("\n  숙소 결과 없음 — 테스트 종료")
-        sys.exit(1)
+        print("\n  숙소 결과 없음 — 파이프라인 스킵, Test 2는 fallback 데이터로 진행")
+        await test_null_user_input(_FALLBACK_RAW, _FALLBACK_NORMALIZED, _FALLBACK_REGION)
+        return
 
     # mapx/mapy → latitude/longitude 변환
     accommodations = _build_accommodation_list(raw_accommodations)
 
     if not accommodations:
-        print("\n  유효한 좌표가 있는 숙소 없음 — 테스트 종료")
-        sys.exit(1)
+        print("\n  유효 좌표 숙소 없음 — 파이프라인 스킵, Test 2는 fallback 데이터로 진행")
+        await test_null_user_input(_FALLBACK_RAW, _FALLBACK_NORMALIZED, selected)
+        return
 
-    # Living → Work → Local 순차 실행 (stdout 섞임 방지)
-    # Living/Local: latitude/longitude 변환된 accommodations
-    # Work: mapx/mapy 원본 raw_accommodations
+    # Living → Work → Local 순차 실행
     for coro in [
         run_living(accommodations),
         run_work(raw_accommodations, selected),
@@ -245,6 +378,9 @@ async def main() -> None:
             print(f"\n  ⚠  Agent 에러: {e}")
 
     section("전체 파이프라인 테스트 완료")
+
+    # Test 2: 실제 파이프라인 데이터로
+    await test_null_user_input(raw_accommodations, accommodations, selected)
 
 
 if __name__ == "__main__":
