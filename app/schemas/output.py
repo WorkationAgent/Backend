@@ -1,22 +1,6 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional, Literal
+from typing import Optional, Literal
 from pydantic import BaseModel, Field
-
-
-class FinalOutput(BaseModel):
-    """사용자에게 보여줄 최종 결과"""
-    map_points: list[MapPoint] = Field(default_factory=list)  # 지도
-    recommended_region: Optional[str] = None  # 추천 지역 및 생활권
-    matched_conditions: list[str] = Field(
-        default_factory=list, description="사용자 조건과 맞는 부분 (3줄 요약)"
-    )
-    work_environment: list[EvaluatedItem] = Field(default_factory=list)  # 작업 가능 환경
-    living_elements: list[EvaluatedItem] = Field(default_factory=list)  # 생활 가능 요소
-    local_experiences: list[EvaluatedItem] = Field(default_factory=list)  # 관광/로컬 경험
-    accommodation_info: Optional[Dict[str, Any]] = None  # 숙소 기본 정보
-    cons: Optional[str] = None  # (선택) 아쉬운 점
-    distance_info: Optional[dict[str, Any]] = None  # (확장) 거리, 이동시간
-
 
 
 class MapPoint(BaseModel):
@@ -33,3 +17,31 @@ class EvaluatedItem(BaseModel):
     name: str
     rating: Optional[float] = None
     description: Optional[str] = None
+
+
+class RankedAccommodation(BaseModel):
+    """순위별 숙소 1개의 평가 결과"""
+    rank: int
+    accommodation_id: str
+    name: str
+    address: Optional[str] = None
+    total_score: float
+    work_summary: Optional[str] = None
+    living_summary: Optional[str] = None
+    local_summary: Optional[str] = None
+    work_environment: list[EvaluatedItem] = Field(default_factory=list)
+    living_elements: list[EvaluatedItem] = Field(default_factory=list)
+    local_experiences: list[EvaluatedItem] = Field(default_factory=list)
+    map_points: list[MapPoint] = Field(default_factory=list)
+    image_url: Optional[str] = None
+    homepage: Optional[str] = None
+    tel: Optional[str] = None
+
+
+class FinalOutput(BaseModel):
+    """사용자에게 보여줄 최종 결과"""
+    recommended_region: Optional[str] = None
+    matched_conditions: list[str] = Field(
+        default_factory=list, description="사용자 조건과 맞는 부분 (3줄 요약)"
+    )
+    ranked_accommodations: list[RankedAccommodation] = Field(default_factory=list)
