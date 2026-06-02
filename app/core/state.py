@@ -21,6 +21,7 @@ class GraphState(TypedDict):
     candidate_regions: List[Dict[str, Any]]
     selected_region: Dict[str, Any]
     candidate_accommodations: List[Dict[str, Any]]
+    normalized_accommodations: List[Dict[str, Any]]
 
     # 4. Sub Agent 평가 결과
     work_evaluations: List[WorkEvaluation]

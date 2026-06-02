@@ -10,3 +10,13 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     dlmb = radians(lon2 - lon1)
     a = sin(dphi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(dlmb / 2) ** 2
     return 2 * R * asin(sqrt(a))
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """두 좌표 간 직선 거리 (km)."""
+    return haversine_meters(lat1, lon1, lat2, lon2) / 1000
+
+
+def walk_minutes(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
+    """직선거리 기반 도보 소요시간 (분). 도보 속도 4km/h 기준."""
+    return round(haversine_km(lat1, lon1, lat2, lon2) / 4 * 60)
