@@ -13,8 +13,9 @@ LivingSearchPlan(Planning LLM 출력)을 받아:
 from __future__ import annotations
 
 import asyncio
-import math
 from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from app.tools.geo import haversine_meters as _haversine_geo
 
 import httpx
 
@@ -54,12 +55,7 @@ _KAKAO_MAX_RADIUS_M = 20_000  # Kakao Local API 반경 상한
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """두 WGS84 좌표 사이 직선 거리(미터). 후보 수집용 넓은 반경에만 사용."""
-    R = 6_371_000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi    = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return R * 2 * math.asin(math.sqrt(a))
+    return _haversine_geo(lat1, lon1, lat2, lon2)
 
 
 def _clean_html(text: str) -> str:
