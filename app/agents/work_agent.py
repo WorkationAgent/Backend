@@ -143,13 +143,13 @@ async def work_agent(state: GraphState) -> dict:
 
     for accommodation in accommodations:
         acc_id = str(accommodation.get("id", ""))
-        mapx = accommodation.get("mapx")
-        mapy = accommodation.get("mapy")
+        longitude = accommodation.get("longitude")
+        latitude = accommodation.get("latitude")
 
-        if mapx is None or mapy is None:
+        if longitude is None or latitude is None:
             workplaces: list[dict] = []
         else:
-            workplaces = search_workplaces(float(mapx), float(mapy), transport=transport)
+            workplaces = search_workplaces(longitude, latitude, transport=transport)
 
             retry = 0
             while not workplaces and retry < RETRY_MAX_COUNT:
@@ -157,7 +157,7 @@ async def work_agent(state: GraphState) -> dict:
                 base = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
                 expanded_radius = base + RETRY_RADIUS_EXPAND_KM
                 workplaces = search_workplaces(
-                    float(mapx), float(mapy),
+                    longitude, latitude,
                     transport=transport,
                     radius_km=expanded_radius,
                 )
