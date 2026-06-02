@@ -19,6 +19,7 @@ Phase 2 (planner_phase2):  (사용자 지역 선택 후 재개)
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 from app.agents.living_agent import living_agent
@@ -27,8 +28,61 @@ from app.agents.stay_agent import accommodation_search_node, region_search_node
 from app.agents.work_agent import work_agent
 from app.core.llm import call_llm
 from app.core.state import GraphState
-from app.prompts.planner_prompts import FINAL_OUTPUT_SYSTEM, build_final_output_user
+from app.prompts.planner_prompts import (
+    FINAL_OUTPUT_SYSTEM, build_final_output_user,
+    INTERPRET_SYSTEM, INTERPRET_USER,
+    PARSE_RAW_SYSTEM, PARSE_RAW_USER,
+)
 from app.schemas.output import FinalOutput
+from app.schemas.user_input import UserInput
+
+
+# ── 줄글 파싱 & 해석 ──────────────────────────────────────────────────────────
+
+async def parse_raw_input(raw_text: str) -> UserInput:
+    """사용자 줄글 → UserInput 구조화."""
+    text = await call_llm(
+        messages=[{"role": "user", "content": PARSE_RAW_USER.format(raw_text=raw_text)}],
+        system=PARSE_RAW_SYSTEM,
+        max_tokens=800,
+    )
+    data = json.loads(text)
+    cleaned = {k: v for k, v in data.items() if v is not None and v != "null"}
+    return UserInput(**cleaned)
+
+
+async def interpret_user_input(user_input: UserInput) -> dict:
+    """UserInput → 5개 조건 해석 (parsed_preferences, must/avoid/preference_conditions, priority_weights)."""
+    text = await call_llm(
+        messages=[{"role": "user", "content": INTERPRET_USER.format(
+            purpose=user_input.purpose or "미입력",
+            duration=user_input.duration or "미입력",
+            desired_region=user_input.desired_region or "미입력",
+            region_style=user_input.region_style or "미입력",
+            desired_vibe=user_input.desired_vibe or "미입력",
+            tourism_hobby=user_input.tourism_hobby or "미입력",
+            work_required=user_input.work_required,
+            work_style=user_input.work_style or "미입력",
+            transport=user_input.transport or "미입력",
+            travel_distance=user_input.travel_distance or "미입력",
+            living_infra=user_input.living_infra or "미입력",
+            budget=user_input.budget or "미입력",
+            accommodation_style=user_input.accommodation_style or "미입력",
+            companion=user_input.companion or "미입력",
+            priority=user_input.priority or "미입력",
+            additional_request=user_input.additional_request or "미입력",
+        )}],
+        system=INTERPRET_SYSTEM,
+        max_tokens=1500,
+    )
+    result = json.loads(text)
+    return {
+        "parsed_preferences":    result.get("parsed_preferences", {}),
+        "must_have_conditions":  result.get("must_have_conditions", []),
+        "avoid_conditions":      result.get("avoid_conditions", []),
+        "preference_conditions": result.get("preference_conditions", []),
+        "priority_weights":      result.get("priority_weights", {}),
+    }
 
 
 # ── 정규화 ────────────────────────────────────────────────────────────────────
@@ -77,12 +131,13 @@ def normalize_accommodations(stay_output: list[dict]) -> list[dict]:
 # ── Phase 1: 지역 검색 ────────────────────────────────────────────────────────
 
 async def planner_phase1(state: GraphState) -> dict:
-    """Stay Agent를 호출해 지역 후보를 반환한다.
-
-    TODO: UserInput → parsed_preferences / must_have_conditions 등 5개 조건
-          해석 LLM 호출을 여기에 추가 (현재는 호출자가 state에 미리 채워야 함).
-    """
-    return await region_search_node(state)
+    """줄글 입력 → 구조화 → 5개 조건 해석 → Stay Agent 지역 후보 탐색."""
+    raw_text: str = state.get("raw_user_input", "")
+    user_input = await parse_raw_input(raw_text)
+    interpreted = await interpret_user_input(user_input)
+    state = {**state, "user_input": user_input, **interpreted}
+    region_result = await region_search_node(state)
+    return {"user_input": user_input, **interpreted, **region_result}
 
 
 # ── Phase 2: 숙소 검색 → 정규화 → 평가 ──────────────────────────────────────
