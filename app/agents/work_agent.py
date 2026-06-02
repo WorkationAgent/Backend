@@ -20,11 +20,8 @@ from __future__ import annotations
 
 import json
 
-import anthropic
-
+from app.core.llm import call_llm
 from app.config.settings import (
-    ANTHROPIC_API_KEY,
-    LLM_MODEL,
     SEARCH_RADIUS_CAR_KM,
     SEARCH_RADIUS_WALK_KM,
     RETRY_CONFIDENCE_THRESHOLD,
@@ -43,7 +40,6 @@ from app.schemas.worker import WorkEvaluation
 from app.tools.place_tool import is_car_transport, search_workplaces
 from app.tools.search_tool import search_workplace_reviews
 
-_llm = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 #---- _enrich_with_reviews() — 후기 데이터로 정보 보정----
 def _enrich_with_reviews(
@@ -71,32 +67,28 @@ def _enrich_with_reviews(
 
 # ── LLM 함수 ─────────────────────────────────────────────────────────
 
-def _extract_requirements_llm(user_input: UserInput) -> dict:
+async def _extract_requirements_llm(user_input: UserInput) -> dict:
     """사용자 입력 → 필수/선호 조건 추출."""
     try:
-        response = _llm.messages.create(
-            model=LLM_MODEL,
-            max_tokens=512,
+        text = await call_llm(
+            messages=[{"role": "user", "content": WORK_REQUIREMENTS_USER.format(
+                purpose=user_input.purpose or "",
+                work_required=user_input.work_required,
+                work_style=user_input.work_style or "",
+                transport=user_input.transport or "",
+                companion=user_input.companion or "",
+                desired_vibe=user_input.desired_vibe or "",
+                additional_request=user_input.additional_request or "",
+            )}],
             system=WORK_REQUIREMENTS_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": WORK_REQUIREMENTS_USER.format(
-                    purpose=user_input.purpose or "",
-                    work_required=user_input.work_required,
-                    work_style=user_input.work_style or "",
-                    transport=user_input.transport or "",
-                    companion=user_input.companion or "",
-                    desired_vibe=user_input.desired_vibe or "",
-                    additional_request=user_input.additional_request or "",
-                ),
-            }],
+            max_tokens=512,
         )
-        return json.loads(response.content[0].text)
+        return json.loads(text)
     except Exception:
         return {"must_have": [], "prefer": []}
 
 
-def _evaluate_workplaces_llm(
+async def _evaluate_workplaces_llm(
     accommodation_id: str,
     user_input: UserInput,
     must_have: list[str],
@@ -110,22 +102,18 @@ def _evaluate_workplaces_llm(
         except AttributeError:
             ui_dict = user_input.dict()
 
-        response = _llm.messages.create(
-            model=LLM_MODEL,
-            max_tokens=2000,
+        text = await call_llm(
+            messages=[{"role": "user", "content": WORK_EVALUATE_USER.format(
+                accommodation_id=accommodation_id,
+                user_input_json=json.dumps(ui_dict, ensure_ascii=False, indent=2),
+                must_have="\n".join(must_have) if must_have else "없음",
+                prefer="\n".join(prefer) if prefer else "없음",
+                workplaces_json=json.dumps(workplaces, ensure_ascii=False, indent=2),
+            )}],
             system=WORK_EVALUATE_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": WORK_EVALUATE_USER.format(
-                    accommodation_id=accommodation_id,
-                    user_input_json=json.dumps(ui_dict, ensure_ascii=False, indent=2),
-                    must_have="\n".join(must_have) if must_have else "없음",
-                    prefer="\n".join(prefer) if prefer else "없음",
-                    workplaces_json=json.dumps(workplaces, ensure_ascii=False, indent=2),
-                ),
-            }],
+            max_tokens=2000,
         )
-        return json.loads(response.content[0].text)
+        return json.loads(text)
     except Exception:
         return {
             "status": "UNKNOWN",
@@ -138,7 +126,7 @@ def _evaluate_workplaces_llm(
 
 # ── 메인 노드 함수 ────────────────────────────────────────────────────
 
-def work_agent(state: GraphState) -> dict:
+async def work_agent(state: GraphState) -> dict:
     accommodations: list[dict] = state.get("candidate_accommodations", [])
     user_input: UserInput = state["user_input"]
     region_name: str = state.get("selected_region", {}).get("region_name", "")
@@ -147,7 +135,7 @@ def work_agent(state: GraphState) -> dict:
     warnings: list[str] = []
 
     # 조건 추출은 한 번만 — 모든 숙소 평가에 공통 적용
-    requirements = _extract_requirements_llm(user_input)
+    requirements = await _extract_requirements_llm(user_input)
     must_have: list[str] = requirements.get("must_have", [])
     prefer: list[str] = requirements.get("prefer", [])
 
@@ -156,13 +144,13 @@ def work_agent(state: GraphState) -> dict:
 
     for accommodation in accommodations:
         acc_id = str(accommodation.get("id", ""))
-        mapx = accommodation.get("mapx")
-        mapy = accommodation.get("mapy")
+        longitude = accommodation.get("longitude")
+        latitude = accommodation.get("latitude")
 
-        if mapx is None or mapy is None:
+        if longitude is None or latitude is None:
             workplaces: list[dict] = []
         else:
-            workplaces = search_workplaces(float(mapx), float(mapy), transport=transport)
+            workplaces = search_workplaces(longitude, latitude, transport=transport)
 
             retry = 0
             while not workplaces and retry < RETRY_MAX_COUNT:
@@ -170,7 +158,7 @@ def work_agent(state: GraphState) -> dict:
                 base = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
                 expanded_radius = base + RETRY_RADIUS_EXPAND_KM
                 workplaces = search_workplaces(
-                    float(mapx), float(mapy),
+                    longitude, latitude,
                     transport=transport,
                     radius_km=expanded_radius,
                 )
@@ -179,7 +167,7 @@ def work_agent(state: GraphState) -> dict:
         if workplaces:
             workplaces = _enrich_with_reviews(workplaces, region_name=region_name)
 
-        eval_result = _evaluate_workplaces_llm(acc_id, user_input, must_have, prefer, workplaces)
+        eval_result = await _evaluate_workplaces_llm(acc_id, user_input, must_have, prefer, workplaces)
 
         confidence = eval_result.get("confidence") or 0.0
         details = eval_result.get("details", {})
