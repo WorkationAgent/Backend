@@ -14,7 +14,7 @@ import asyncio
 import json
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from app.config.settings import RETRY_CONFIDENCE_THRESHOLD, RETRY_MAX_COUNT
+from app.config.settings import RETRY_CONFIDENCE_THRESHOLD, RETRY_MAX_COUNT, LLM_MODEL, LLM_MODEL_SONNET
 from app.core.llm import call_llm
 from app.core.state import GraphState
 from app.prompts.living_prompts import EVALUATION_SYSTEM, PLANNING_SYSTEM, REFLECTION_SYSTEM
@@ -36,9 +36,9 @@ from app.tools.living_tool import (
 _SCAN_RADIUS: Dict[str, float] = {"walk": 3.0, "car": 10.0}
 
 # 단계별 모델 (Hybrid 전략)
-_MODEL_PLANNING    = "claude-sonnet-4-6"  # 구조화 작업
-_MODEL_REFLECTION  = "claude-opus-4-8"   # 가짜 결과 감지 — 핵심 판단
-_MODEL_EVALUATION  = "claude-sonnet-4-6"  # 명확한 기준 기반 평가
+_MODEL_PLANNING    = LLM_MODEL_SONNET  # 구조화 작업
+_MODEL_REFLECTION  = LLM_MODEL        # 가짜 결과 감지 — 핵심 판단
+_MODEL_EVALUATION  = LLM_MODEL_SONNET  # 명확한 기준 기반 평가
 
 
 # ── 유틸 ──────────────────────────────────────────────────────────────────────

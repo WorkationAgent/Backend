@@ -160,6 +160,60 @@ async def search_festival(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [숙소 검색] Stay Agent 전용
+# ─────────────────────────────────────────────────────────────────────────────
+async def search_accommodations(region_name: str, max_rows: int = 20) -> list[dict]:
+    """생활권명 기반 숙박 시설 검색.
+
+    시/도 단위부터 순서대로 시도한다.
+    """
+    cleaned = region_name.replace("생활권", "").strip()
+    keywords = cleaned.split()[:2]
+    for keyword in keywords:
+        result = await _search_accommodation_by_keyword(keyword, max_rows)
+        if result:
+            return result
+    return []
+
+
+async def _search_accommodation_by_keyword(keyword: str, max_rows: int) -> list[dict]:
+    params = {
+        "serviceKey": KTO_API_KEY,
+        "numOfRows": max_rows,
+        "pageNo": 1,
+        "MobileOS": "ETC",
+        "MobileApp": "WorkationPlanner",
+        "_type": "json",
+        "contentTypeId": 32,
+        "keyword": keyword,
+    }
+    try:
+        data = await _get(f"{KTO_BASE_URL}/searchKeyword2", params)
+        items = data.get("response", {}).get("body", {}).get("items", {})
+        if not items:
+            return []
+        raw = items.get("item", [])
+        return raw if isinstance(raw, list) else [raw]
+    except Exception:
+        return []
+
+
+def simplify_accommodation(item: dict) -> dict:
+    """LLM에 넘길 숙소 정보를 최소화한다."""
+    return {
+        "id": str(item.get("contentid", "")),
+        "name": item.get("title", ""),
+        "address": f"{item.get('addr1', '')} {item.get('addr2', '')}".strip(),
+        "category": item.get("cat3", ""),
+        "image_url": item.get("firstimage") or None,
+        "homepage": item.get("homepage") or None,
+        "tel": item.get("tel") or None,
+        "mapx": item.get("mapx") or None,
+        "mapy": item.get("mapy") or None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # [확장 API – 스텁] 고캠핑
 # ─────────────────────────────────────────────────────────────────────────────
 async def gocamping_location(
