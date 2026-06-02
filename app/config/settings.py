@@ -41,7 +41,9 @@ CONFIDENCE_LOW: int = 40         # 근거 제한적, 추론 비중 큼
 
 # ── 검색 반경 ─────────────────────────────────────────────────
 SEARCH_RADIUS_WALK_KM: float = 1.5      # 도보 기준 반경 (km)
-SEARCH_RADIUS_CAR_MIN: int = 60         # 자동차 기준 (분)
+SEARCH_RADIUS_CAR_KM: float = 10.0     # 자차 기준 반경 (km, 약 15~20분 운전)
+SEARCH_RADIUS_CAR_SPEED_KMH: float = 40.0  # 운전 시간 계산 기준 속도 (km/h)
+SEARCH_RADIUS_CAR_MIN: int = 60         # 자동차 기준 (분) - 레거시, 미사용
 SEARCH_RADIUS_LOCAL_KM: float = 2.0     # 관광/로컬 반경 (km, 조금 넓게)
 
 # ── 재호출 기준 ───────────────────────────────────────────────
