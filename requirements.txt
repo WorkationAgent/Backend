@@ -1,6 +1,8 @@
 # LLM
 anthropic>=0.40.0
 openai>=1.0.0
+langsmith>=0.2.0
+langchain-anthropic>=0.3.0
 
 # Agent 오케스트레이션
 langgraph>=0.2.0

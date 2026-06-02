@@ -6,6 +6,7 @@ load_dotenv()
 # ── Anthropic ─────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
 LLM_MODEL: str = "claude-opus-4-8"
+LLM_MODEL_SONNET: str = "claude-sonnet-4-6"  # 구조화·평가 작업용 (비용 절감)
 
 # ── OpenAI ────────────────────────────────────────────────────
 OPENAI_API_KEY: str = os.environ["OPENAI_API_KEY"]
