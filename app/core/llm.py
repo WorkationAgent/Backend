@@ -4,7 +4,8 @@ import json
 import re
 from typing import Optional, Type, TypeVar, Union
 
-import anthropic
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
@@ -17,7 +18,7 @@ from app.config.settings import (
 
 T = TypeVar("T", bound=BaseModel)
 
-_anthropic = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+_anthropic = ChatAnthropic(model=LLM_MODEL, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -26,15 +27,11 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
 def _extract_json(text: str) -> str:
-    """LLM 응답에서 JSON 본문만 추출.
-```json 펜스나 앞뒤 설명 텍스트가 있어도 대응.
-    """
+    """LLM 응답에서 JSON 본문만 추출."""
     text = _FENCE_RE.sub("", text.strip()).strip()
-    # 첫 { 또는 [부터 시작
     candidates = [i for i in (text.find("{"), text.find("[")) if i >= 0]
     if candidates:
         text = text[min(candidates):]
-    # 마지막 } 또는 ]에서 끝
     end = max(text.rfind("}"), text.rfind("]"))
     if end >= 0:
         text = text[: end + 1]
@@ -51,70 +48,52 @@ async def call_llm(
     model: Optional[str] = None,
     max_retries: int = 1,
 ) -> Union[str, T]:
-    """공용 Claude 호출.
-    
-    output_schema가 지정되면 JSON 모드로 호출하고 수동 파싱.
-    (구조화 출력의 'Schema too complex' 회피용.)
-    """
-    create_kwargs: dict = dict(
-        model=model or LLM_MODEL,
-        max_tokens=max_tokens,
-        messages=list(messages),
-    )
+    """공용 Claude 호출."""
+    llm = _anthropic
+    if model and model != LLM_MODEL:
+        llm = ChatAnthropic(model=model, api_key=ANTHROPIC_API_KEY, max_tokens=max_tokens)
 
+    lc_messages = []
     if system:
-        system_block: dict = {"type": "text", "text": system}
-        if use_cache:
-            system_block["cache_control"] = {"type": "ephemeral"}
-        create_kwargs["system"] = [system_block]
+        lc_messages.append(SystemMessage(content=system))
+    for msg in messages:
+        if msg["role"] == "user":
+            lc_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            from langchain_core.messages import AIMessage
+            lc_messages.append(AIMessage(content=msg["content"]))
 
-    # 일반 텍스트 응답
     if output_schema is None:
-        response = await _anthropic.messages.create(**create_kwargs)
-        return next(
-            (b.text for b in response.content if b.type == "text"), ""
-        )
+        response = await llm.ainvoke(lc_messages)
+        return response.content
 
     # 구조화 응답: JSON 스키마 안내 + 수동 파싱
-    schema_str = json.dumps(
-        output_schema.model_json_schema(), ensure_ascii=False
-    )
-    augmented = list(create_kwargs["messages"])
-    last = augmented[-1]
-    augmented[-1] = {
-        **last,
-        "content": (
-            f"{last['content']}\n\n"
+    schema_str = json.dumps(output_schema.model_json_schema(), ensure_ascii=False)
+    last_msg = lc_messages[-1]
+    lc_messages[-1] = HumanMessage(
+        content=(
+            f"{last_msg.content}\n\n"
             f"---\n"
             f"**출력 형식**: 아래 JSON 스키마를 정확히 따르는 JSON만 출력.\n"
             f"마크다운 코드블록(```), 설명, 부가 텍스트 절대 금지.\n\n"
             f"스키마:\n{schema_str}"
-        ),
-    }
-    create_kwargs["messages"] = augmented
+        )
+    )
 
     last_text = ""
     last_error: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
-            response = await _anthropic.messages.create(**create_kwargs)
-            last_text = next(
-                (b.text for b in response.content if b.type == "text"), ""
-            )
+            response = await llm.ainvoke(lc_messages)
+            last_text = response.content
             return output_schema.model_validate_json(_extract_json(last_text))
         except (ValidationError, json.JSONDecodeError) as e:
             last_error = e
             if attempt < max_retries:
-                # 실패한 응답을 보여주고 다시 시도
-                create_kwargs["messages"] = augmented + [
-                    {"role": "assistant", "content": last_text},
-                    {
-                        "role": "user",
-                        "content": (
-                            "위 응답이 유효한 JSON이 아니어서 파싱 실패. "
-                            "오직 JSON만 다시 출력해주세요."
-                        ),
-                    },
+                from langchain_core.messages import AIMessage
+                lc_messages = lc_messages + [
+                    AIMessage(content=last_text),
+                    HumanMessage(content="위 응답이 유효한 JSON이 아니어서 파싱 실패. 오직 JSON만 다시 출력해주세요."),
                 ]
 
     raise RuntimeError(
@@ -123,7 +102,7 @@ async def call_llm(
     )
 
 
-# ── 임베딩 (변경 없음) ────────────────────────────────────────────────
+# ── 임베딩 ────────────────────────────────────────────────────────────
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
     response = await _openai.embeddings.create(
         model=OPENAI_EMBEDDING_MODEL,

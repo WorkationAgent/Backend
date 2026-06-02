@@ -93,9 +93,9 @@ def _build_accommodation_list(candidate_accommodations: list[dict]) -> list[dict
 
 # ── Phase 1: 생활권 탐색 ───────────────────────────────────────
 
-def run_stay_phase1() -> list[dict]:
+async def run_stay_phase1() -> list[dict]:
     section("Phase 1. Stay Agent — 생활권 탐색")
-    result = region_search_node(FAKE_STATE)
+    result = await region_search_node(FAKE_STATE)
     candidates = result["candidate_regions"]
 
     for c in candidates:
@@ -108,10 +108,10 @@ def run_stay_phase1() -> list[dict]:
 
 # ── Phase 2: 숙소 탐색 ────────────────────────────────────────
 
-def run_stay_phase2(selected_region: dict) -> list[dict]:
+async def run_stay_phase2(selected_region: dict) -> list[dict]:
     section("Phase 2. Stay Agent — 숙소 탐색 & 점수화")
     state = {**FAKE_STATE, "selected_region": selected_region}
-    result = accommodation_search_node(state)
+    result = await accommodation_search_node(state)
 
     accommodations = result.get("candidate_accommodations", [])
     warnings = result.get("warnings", [])
@@ -172,7 +172,7 @@ async def run_work(accommodations: list[dict], selected_region: dict) -> None:
         "selected_region": selected_region,
     }
 
-    result = work_agent(state)
+    result = await work_agent(state)
     evaluations = result.get("work_evaluations", [])
     errors = result.get("errors", [])
 
@@ -214,11 +214,11 @@ async def run_local(accommodations: list[dict]) -> None:
 
 async def main() -> None:
     # Stay Phase 1
-    candidates = run_stay_phase1()
+    candidates = await run_stay_phase1()
     selected = candidates[0]
 
     # Stay Phase 2
-    raw_accommodations = run_stay_phase2(selected)
+    raw_accommodations = await run_stay_phase2(selected)
 
     if not raw_accommodations:
         print("\n  숙소 결과 없음 — 테스트 종료")

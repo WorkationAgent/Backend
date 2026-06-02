@@ -14,9 +14,9 @@ Phase 2 - accommodation_search_node:
 import json
 from typing import Any
 
-import anthropic
+from langsmith import traceable
 
-from app.config.settings import ANTHROPIC_API_KEY, LLM_MODEL
+from app.core.llm import call_llm
 from app.prompts.stay_prompts import (
     ACCOMMODATION_SCORE_SYSTEM,
     ACCOMMODATION_SCORE_USER,
@@ -25,44 +25,36 @@ from app.prompts.stay_prompts import (
     REGION_SEARCH_SYSTEM,
     REGION_SEARCH_USER,
 )
-from app.tools.kto_tool_stay import search_accommodations, simplify_accommodation
-from app.tools.naver_tool_stay import search_region_reviews, search_reviews
-
-_llm = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+from app.tools.kto import search_accommodations, simplify_accommodation
+from app.tools.naver import search_region_reviews, search_accommodation_reviews as search_reviews
 
 
 # ── 내부 헬퍼 ──────────────────────────────────────────────────
 
-def _extract_region_insights(naver_reviews: str) -> str:
+@traceable(name="extract_region_insights")
+async def _extract_region_insights(naver_reviews: str) -> str:
     """네이버 후기에서 지역별 핵심 정보를 추출한다."""
     if not naver_reviews:
         return ""
-    response = _llm.messages.create(
-        model=LLM_MODEL,
-        max_tokens=1000,
+    return await call_llm(
+        messages=[{"role": "user", "content": NAVER_EXTRACT_USER.format(naver_reviews=naver_reviews)}],
         system=NAVER_EXTRACT_SYSTEM,
-        messages=[{
-            "role": "user",
-            "content": NAVER_EXTRACT_USER.format(naver_reviews=naver_reviews),
-        }],
+        max_tokens=1000,
     )
-    return response.content[0].text
 
 
 # ── Phase 1: 후보 생활권 탐색 ──────────────────────────────────
 
-def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
+@traceable(name="stay_region_search")
+async def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
     parsed = state.get("parsed_preferences", {})
 
     # Step 1: 네이버 후기 수집 → LLM이 지역별 핵심 정보 추출
-    naver_reviews = search_region_reviews(parsed)
-    extracted = _extract_region_insights(naver_reviews)
+    naver_reviews = await search_region_reviews(parsed)
+    extracted = await _extract_region_insights(naver_reviews)
 
     # Step 2: 추출된 정보 + 사용자 조건 → 생활권 3개 추천
-    response = _llm.messages.create(
-        model=LLM_MODEL,
-        max_tokens=2000,
-        system=REGION_SEARCH_SYSTEM,
+    text = await call_llm(
         messages=[{
             "role": "user",
             "content": REGION_SEARCH_USER.format(
@@ -74,9 +66,11 @@ def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
                 parsed_preferences=json.dumps(parsed, ensure_ascii=False, indent=2),
             ),
         }],
+        system=REGION_SEARCH_SYSTEM,
+        max_tokens=2000,
     )
 
-    raw: list[dict] = json.loads(response.content[0].text)
+    raw: list[dict] = json.loads(text)
     raw.sort(key=lambda x: x.get("rank", 99))
 
     return {"candidate_regions": raw}
@@ -84,14 +78,15 @@ def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
 
 # ── Phase 2: 숙소 탐색 & 점수화 ───────────────────────────────
 
-def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
+@traceable(name="stay_accommodation_search")
+async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
     selected: dict = state["selected_region"]
     region_name: str = selected.get("region_name", "")
     parsed = state.get("parsed_preferences", {})
     must_have = state.get("must_have_conditions", [])
 
     # KTO API로 숙소 검색
-    raw_items = search_accommodations(region_name)
+    raw_items = await search_accommodations(region_name)
     if not raw_items:
         return {
             "candidate_accommodations": [],
@@ -102,14 +97,11 @@ def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
     simplified = []
     for item in raw_items:
         acc = simplify_accommodation(item)
-        acc["reviews"] = search_reviews(acc["name"])
+        acc["reviews"] = await search_reviews(acc["name"])
         simplified.append(acc)
 
     # LLM으로 점수화 → 상위 3개 선별
-    response = _llm.messages.create(
-        model=LLM_MODEL,
-        max_tokens=3000,
-        system=ACCOMMODATION_SCORE_SYSTEM,
+    text = await call_llm(
         messages=[{
             "role": "user",
             "content": ACCOMMODATION_SCORE_USER.format(
@@ -119,9 +111,11 @@ def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
                 accommodations_with_reviews=json.dumps(simplified, ensure_ascii=False, indent=2),
             ),
         }],
+        system=ACCOMMODATION_SCORE_SYSTEM,
+        max_tokens=3000,
     )
 
-    ranked: list[dict] = json.loads(response.content[0].text)
+    ranked: list[dict] = json.loads(text)
 
     # KTO 원본 데이터에서 좌표·이미지·연락처 보강
     id_to_raw = {str(item.get("contentid")): item for item in raw_items}
