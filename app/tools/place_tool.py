@@ -17,7 +17,7 @@ from app.tools.geo import haversine_km as calc_distance_km, walk_minutes as calc
 # 장소 유형별 편의시설 추정값
 # (wifi, outlet, long_stay, quiet, large_table, pet_friendly, craft_allowed, parking)
 _AMENITY_BY_TYPE: dict[str, tuple] = {
-    "cafe":       (True,  True,  True,  False, False, False, False, False),
+    "cafe":       (True,  True,  True,  None,  False, False, False, False),
     "coworking":  (True,  True,  True,  True,  True,  False, True,  True),
     "study_cafe": (True,  True,  True,  True,  True,  False, False, False),
     "library":    (True,  True,  True,  True,  True,  False, False, True),
@@ -168,7 +168,7 @@ def _build_place(
     amenities: tuple,
 ) -> dict:
     """장소 딕셔너리를 표준 형태로 조립한다."""
-    wifi, outlet, long_stay, quiet, large_table, pet, craft, parking = amenities
+    wifi, outlet, long_stay, quiet, large_table, pet, craft, parking = amenities  # quiet: True/False/None
     return {
         "name":           name,
         "type":           ptype,

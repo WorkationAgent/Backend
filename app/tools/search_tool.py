@@ -26,6 +26,9 @@ _OUTLET_NEG = ["콘센트 없", "충전 못", "콘센트 부족"]
 _LONGSTAY_POS = ["오래 앉", "오래 있", "장시간", "눈치 없", "편하게 오래", "오랫동안"]
 _LONGSTAY_NEG = ["눈치 보", "오래 있기 힘", "회전율", "빨리 나가", "오래 못 있"]
 
+_QUIET_POS = ["조용", "카공", "집중하기 좋", "작업하기 좋", "소음 없", "잔잔", "조용해서"]
+_QUIET_NEG = ["시끄럽", "소음이 심", "왁자지껄", "애들이 많", "아이들", "떠들", "시끄러워"]
+
 
 def search_workplace_reviews(
     place_name: str,
@@ -58,6 +61,7 @@ def search_workplace_reviews(
         "wifi":       _extract_feature(raw_text, _WIFI_POS, _WIFI_NEG),
         "outlet":     _extract_feature(raw_text, _OUTLET_POS, _OUTLET_NEG),
         "long_stay":  _extract_feature(raw_text, _LONGSTAY_POS, _LONGSTAY_NEG),
+        "quiet":      _extract_feature(raw_text, _QUIET_POS, _QUIET_NEG),
     }
 
 
