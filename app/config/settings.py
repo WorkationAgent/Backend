@@ -19,6 +19,7 @@ KTO_BASE_URL: str = "https://apis.data.go.kr/B551011/KorService2"
 # ── Kakao ─────────────────────────────────────────────────────
 KAKAO_REST_API_KEY: str = os.environ["KAKAO_REST_API_KEY"]
 KAKAO_LOCAL_URL: str = "https://dapi.kakao.com/v2/local"
+KAKAO_MOBILITY_URL: str = "https://apis-navi.kakaomobility.com/v1/directions"
 
 # ── Naver ─────────────────────────────────────────────────────
 NAVER_CLIENT_ID: str = os.environ["NAVER_CLIENT_ID"]
