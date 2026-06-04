@@ -253,9 +253,14 @@ async def living_agent(state: GraphState) -> GraphState:
     """
     parsed_preferences: Dict[str, Any] = state.get("parsed_preferences") or {}
     priority_weights: Dict[str, float] = state.get("priority_weights") or {}
+    must_have_conditions: List[str]    = state.get("must_have_conditions") or []
     candidates: List[Dict[str, Any]]   = state.get("candidate_accommodations") or []
     retry_count: Dict[str, int]        = dict(state.get("retry_count") or {})
     errors: List[str]                  = list(state.get("errors") or [])
+
+    # must_have_conditions를 parsed_preferences에 주입 (Planning LLM에 전달)
+    if must_have_conditions:
+        parsed_preferences = {**parsed_preferences, "must_have_conditions": must_have_conditions}
 
     if not candidates:
         return {**state, "living_evaluations": [], "errors": errors}

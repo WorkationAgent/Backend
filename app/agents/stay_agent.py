@@ -25,7 +25,8 @@ from app.prompts.stay_prompts import (
     REGION_SEARCH_SYSTEM,
     REGION_SEARCH_USER,
 )
-from app.tools.kto import search_accommodations, simplify_accommodation
+from app.tools.kto import search_accommodations as kto_search_accommodations, simplify_accommodation
+from app.tools.kakao import search_accommodations as kakao_search_accommodations
 from app.tools.naver import search_region_reviews, search_accommodation_reviews as search_reviews
 
 
@@ -78,19 +79,56 @@ async def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
 
 # ── Phase 2: 숙소 탐색 & 점수화 ───────────────────────────────
 
+def _merge_accommodations(kto_items: list[dict], kakao_items: list) -> list[dict]:
+    """KTO + Kakao 결과 병합 및 중복 제거."""
+    merged: list[dict] = list(kto_items)
+    kto_names = {item.get("title", "").strip().lower() for item in kto_items}
+
+    for place in kakao_items:
+        name = place.name.strip().lower()
+        if any(name in kn or kn in name for kn in kto_names):
+            continue
+        kto_names.add(name)
+        merged.append({
+            "contentid": f"kakao_{place.place_id}",
+            "title":     place.name,
+            "addr1":     place.address or place.road_address or "",
+            "addr2":     "",
+            "cat3":      "숙박",
+            "mapx":      str(place.longitude) if place.longitude else None,
+            "mapy":      str(place.latitude)  if place.latitude  else None,
+            "firstimage": None,
+            "homepage":   place.place_url,
+            "tel":        place.phone,
+        })
+
+    return merged
+
+
 @traceable(name="stay_accommodation_search")
 async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
+    import asyncio as _asyncio
+
     selected: dict = state["selected_region"]
     region_name: str = selected.get("region_name", "")
     parsed = state.get("parsed_preferences", {})
     must_have = state.get("must_have_conditions", [])
 
-    # KTO API로 숙소 검색
-    raw_items = await search_accommodations(region_name)
+    # KTO + Kakao 동시 검색
+    kto_result, kakao_result = await _asyncio.gather(
+        kto_search_accommodations(region_name),
+        kakao_search_accommodations(region_name, max_results=20),
+        return_exceptions=True,
+    )
+
+    kto_items   = kto_result   if isinstance(kto_result, list)   else []
+    kakao_items = kakao_result if isinstance(kakao_result, list) else []
+    raw_items   = _merge_accommodations(kto_items, kakao_items)
+
     if not raw_items:
         return {
             "candidate_accommodations": [],
-            "warnings": [f"{region_name} 반경 내 숙소 검색 결과가 없습니다. 반경을 직접 확장하거나 다른 지역을 선택해주세요."],
+            "warnings": [f"{region_name} 숙소 검색 결과가 없습니다."],
         }
 
     # 숙소별 네이버 후기 수집
@@ -117,14 +155,14 @@ async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
 
     ranked: list[dict] = json.loads(text)
 
-    # KTO 원본 데이터에서 좌표·이미지·연락처 보강
+    # 원본 데이터에서 좌표·이미지·연락처 보강
     id_to_raw = {str(item.get("contentid")): item for item in raw_items}
     for item in ranked:
         raw = id_to_raw.get(str(item.get("id")), {})
         item["image_url"] = raw.get("firstimage") or None
-        item["homepage"] = raw.get("homepage") or None
-        item["tel"] = raw.get("tel") or None
-        item["mapx"] = raw.get("mapx") or None
-        item["mapy"] = raw.get("mapy") or None
+        item["homepage"]  = raw.get("homepage") or None
+        item["tel"]       = raw.get("tel") or None
+        item["mapx"]      = raw.get("mapx") or None
+        item["mapy"]      = raw.get("mapy") or None
 
     return {"candidate_accommodations": ranked}

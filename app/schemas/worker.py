@@ -15,10 +15,10 @@ class DimensionScores(BaseModel):
     """차원별 실제 점수 (합 = LocalEvaluation.score).
     각 값의 의미는 dimension_weights에 따라 달라짐.
     """
-    signature: int = 0   # 지역 시그니처 명소·특별 경험의 풍부함·접근성
-    access: int = 0      # 시그니처들이 숙소에서 닿는 정도
-    daily: int = 0       # 체류 중 매일 들를 카페·산책·맛집
-    fit: int = 0         # 사용자 hobby/vibe 매칭
+    signature: float = 0   # 지역 시그니처 명소·특별 경험의 풍부함·접근성
+    access: float = 0      # 시그니처들이 숙소에서 닿는 정도
+    daily: float = 0       # 체류 중 매일 들를 카페·산책·맛집
+    fit: float = 0         # 사용자 hobby/vibe 매칭
 
 
 class DimensionWeights(BaseModel):

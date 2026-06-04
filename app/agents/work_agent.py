@@ -134,10 +134,15 @@ async def work_agent(state: GraphState) -> dict:
     evaluations: list[WorkEvaluation] = []
     warnings: list[str] = []
 
-    # 조건 추출은 한 번만 — 모든 숙소 평가에 공통 적용
-    requirements = await _extract_requirements_llm(user_input)
-    must_have: list[str] = requirements.get("must_have", [])
-    prefer: list[str] = requirements.get("prefer", [])
+    # Planner 해석 조건 우선 사용, 없으면 user_input에서 자체 추출
+    planner_must_have: list[str] = state.get("must_have_conditions", [])
+    if planner_must_have:
+        must_have = planner_must_have
+        prefer: list[str] = state.get("preference_conditions", [])
+    else:
+        requirements = await _extract_requirements_llm(user_input)
+        must_have = requirements.get("must_have", [])
+        prefer = requirements.get("prefer", [])
 
     transport = user_input.transport
     by_car = is_car_transport(transport)

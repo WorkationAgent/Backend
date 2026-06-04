@@ -3,10 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Anthropic ─────────────────────────────────────────────────
+# ── Anthropic (tool use 전용으로만 유지) ──────────────────────
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
-LLM_MODEL: str = "claude-opus-4-8"
-LLM_MODEL_SONNET: str = "claude-sonnet-4-6"  # 구조화·평가 작업용 (비용 절감)
+
+# ── OpenAI (메인 LLM) ─────────────────────────────────────────
+LLM_MODEL: str = os.environ["OPENAI_MODEL"]
+LLM_MODEL_SONNET: str = os.environ.get("OPENAI_MODEL_MINI", os.environ["OPENAI_MODEL"])
 
 # ── OpenAI ────────────────────────────────────────────────────
 OPENAI_API_KEY: str = os.environ["OPENAI_API_KEY"]
