@@ -23,14 +23,40 @@ from app.tools.rag import retrieve_regional_context
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry point
+# Entry point — state 기반 (Planner 호출용)
 # ─────────────────────────────────────────────────────────────────────────────
+async def local_agent(state: dict) -> dict:
+    """Planner가 호출하는 통일된 진입점.
+
+    읽기: state["candidate_accommodations"], state["user_input"],
+          state["must_have_conditions"]
+    쓰기: {"local_evaluations": [...], "warnings": [...]}
+    """
+    accommodations: list[dict] = state.get("candidate_accommodations", [])
+    user_input: UserInput = state["user_input"]
+    stay_dates = state.get("parsed_preferences", {}).get("stay_dates")
+    must_have_conditions: list[str] = state.get("must_have_conditions", [])
+
+    # must_have를 user_input에 additional_request로 주입 (Local Agent가 활용)
+    if must_have_conditions and not user_input.additional_request:
+        from dataclasses import replace
+        try:
+            user_input = user_input.model_copy(
+                update={"additional_request": " | ".join(must_have_conditions)}
+            )
+        except Exception:
+            pass
+
+    evaluations = await evaluate_accommodations(accommodations, user_input, stay_dates)
+    return {"local_evaluations": list(evaluations), "warnings": []}
+
+
 async def evaluate_accommodations(
     accommodations: list[dict],
     user_input: UserInput,
     stay_dates: Optional[tuple[str, str]] = None,
 ) -> list[LocalEvaluation]:
-    """Stay Agent가 넘긴 숙소 목록을 병렬 평가."""
+    """숙소 목록 병렬 평가 (직접 호출용)."""
     tasks = [
         _evaluate_one(acc, user_input, stay_dates)
         for acc in accommodations

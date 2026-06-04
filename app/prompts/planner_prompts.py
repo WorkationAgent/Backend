@@ -90,11 +90,25 @@ INTERPRET_USER = """
 }}
 
 작성 기준:
-- must_have: 사용자가 우선순위 1~2위로 꼽거나 work_required=true처럼 명시적으로 필요한 것
-- avoid: additional_request에서 싫다고 한 것
-- preference: 있으면 좋지만 없어도 되는 것
-- priority_weights: 5개 합이 반드시 1.0, 우선순위 순서에 따라 배분
-- work_required가 false거나 None이면 work 가중치를 낮게 (0.05~0.10)
+
+[must_have — 핵심 원칙]
+- "지역이 바다 근처여야 한다" 같은 지역 희망은 must_have가 아님 → parsed_preferences에 넣을 것
+- must_have는 숙소·서비스 조건만: "반려견 동반 가능 숙소", "카페 작업 가능 환경", "대중교통 도보 15분 이내"
+- 동행이 반려동물이면 반드시: "반려견/반려동물 입실 가능 숙소"를 must_have에 포함
+- 작업 필요하면: "Wi-Fi·콘센트 완비된 카페 또는 작업 공간"을 must_have에 포함
+- must_have는 3개 이내로 핵심만 (많으면 재호출이 잦아짐)
+
+[priority_weights — 반드시 지킬 규칙]
+- 5개 합이 정확히 1.0
+- work_required=false 또는 "일 안 할거야" → work: 0.00
+- work_required=true 또는 워케이션 → work: 0.25~0.35
+- "관광 안 할거야", "그냥 쉬러가요" 명시적 거부 → local: 0.00
+- tourism_hobby가 서핑·맛집·액티비티처럼 구체적이고 중요할 때 → local: 0.20~0.30
+- tourism_hobby가 산책처럼 가볍거나 부차적 → local: 0.05~0.15
+- tourism_hobby=None + 휴식 목적 → local: 0.00~0.05
+- 단기(1~5일) → living: 0.15~0.20 (생활인프라 덜 중요)
+- 장기(14일 이상) → living: 0.25~0.35 (생활인프라 중요)
+- living은 항상 최소 0.15 유지
 """
 
 import json

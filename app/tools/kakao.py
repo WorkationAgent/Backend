@@ -110,6 +110,29 @@ async def coord2regioncode(
     )
 
 
+async def search_accommodations(region_name: str, max_results: int = 15) -> list[KakaoPlace]:
+    """지역명 기반 숙박시설 검색 (좌표 없이 전국 키워드 검색).
+
+    Stay Agent가 KTO 결과를 보완하기 위해 사용.
+    """
+    cleaned = region_name.replace("생활권", "").strip()
+    keywords = [f"{cleaned} 펜션", f"{cleaned} 게스트하우스", f"{cleaned} 호텔", f"{cleaned} 숙소"]
+
+    seen_ids: set[str] = set()
+    results: list[KakaoPlace] = []
+
+    for kw in keywords:
+        places = await keyword_search(kw, size=min(max_results, 15))
+        for p in places:
+            if p.place_id not in seen_ids:
+                seen_ids.add(p.place_id)
+                results.append(p)
+        if len(results) >= max_results:
+            break
+
+    return results[:max_results]
+
+
 async def keyword_search(
     query: str,
     latitude: Optional[float] = None,

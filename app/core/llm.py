@@ -4,14 +4,20 @@ import json
 import re
 from typing import Optional, Type, TypeVar, Union
 
-import anthropic as _anthropic_sdk
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+# ── LLM 프로바이더 설정 ──────────────────────────────────────────────
+# 현재: OpenAI 사용 (Anthropic 크레딧 소진 시)
+# 전환 방법: 아래 주석 해제 후 OpenAI 관련 줄 주석 처리
+#
+# [Anthropic으로 전환 시]
+# from langchain_anthropic import ChatAnthropic
+# from app.config.settings import ANTHROPIC_API_KEY, LLM_MODEL, ...
+# _llm = ChatAnthropic(model="claude-opus-4-8", api_key=ANTHROPIC_API_KEY, max_tokens=4096)
+
+from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.settings import (
-    ANTHROPIC_API_KEY,
     LLM_MODEL,
     OPENAI_API_KEY,
     OPENAI_EMBEDDING_MODEL,
@@ -19,8 +25,7 @@ from app.config.settings import (
 
 T = TypeVar("T", bound=BaseModel)
 
-_anthropic = ChatAnthropic(model=LLM_MODEL, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
-_anthropic_raw = _anthropic_sdk.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+_llm = ChatOpenAI(model=LLM_MODEL, api_key=OPENAI_API_KEY, max_tokens=4096)
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -50,10 +55,12 @@ async def call_llm(
     model: Optional[str] = None,
     max_retries: int = 1,
 ) -> Union[str, T]:
-    """공용 Claude 호출."""
-    llm = _anthropic
+    """공용 OpenAI 호출."""
+    from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+
+    llm = _llm
     if model and model != LLM_MODEL:
-        llm = ChatAnthropic(model=model, api_key=ANTHROPIC_API_KEY, max_tokens=max_tokens)
+        llm = ChatOpenAI(model=model, api_key=OPENAI_API_KEY, max_tokens=max_tokens)
 
     lc_messages = []
     if system:
@@ -62,7 +69,6 @@ async def call_llm(
         if msg["role"] == "user":
             lc_messages.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
-            from langchain_core.messages import AIMessage
             lc_messages.append(AIMessage(content=msg["content"]))
 
     if output_schema is None:
@@ -104,7 +110,7 @@ async def call_llm(
     )
 
 
-# ── Tool Use 루프 (하이브리드 보강 단계용) ───────────────────────────
+# ── Tool Use 루프 (OpenAI function calling) ───────────────────────────
 async def call_llm_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -113,38 +119,52 @@ async def call_llm_with_tools(
     max_rounds: int = 3,
     max_tokens: int = 2048,
 ) -> list:
-    """Tool use 루프. LLM이 tool을 부르면 실행 결과를 다시 넣어 반복.
-    max_rounds 도달하거나 LLM이 더 이상 tool을 부르지 않으면 종료.
+    """Tool use 루프 — OpenAI function calling 사용.
 
-    tool_executor(name, input) → (LLM에 보여줄 요약 str, 우리가 수집할 payload)
-    반환: 수집된 payload 리스트 (각 tool_use 호출당 1개).
+    tools 형식 (Anthropic input_schema → OpenAI parameters 자동 변환):
+        [{"name": "...", "description": "...", "input_schema": {...}}]
     """
-    create_kwargs: dict = dict(
-        model=LLM_MODEL,
-        max_tokens=max_tokens,
-        messages=list(messages),
-        tools=tools,
-    )
+    # Anthropic 형식 → OpenAI 형식 변환
+    oai_tools = []
+    for t in tools:
+        oai_tools.append({
+            "type": "function",
+            "function": {
+                "name":        t["name"],
+                "description": t.get("description", ""),
+                "parameters":  t.get("input_schema", t.get("parameters", {})),
+            }
+        })
+
+    msgs = list(messages)
     if system:
-        create_kwargs["system"] = [{"type": "text", "text": system}]
+        msgs = [{"role": "system", "content": system}] + msgs
 
     collected: list = []
     for _ in range(max_rounds):
-        resp = await _anthropic_raw.messages.create(**create_kwargs)
-        create_kwargs["messages"].append({"role": "assistant", "content": resp.content})
-        if resp.stop_reason != "tool_use":
+        resp = await _openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=msgs,
+            tools=oai_tools,
+            max_tokens=max_tokens,
+        )
+        choice = resp.choices[0]
+        msgs.append(choice.message.model_dump(exclude_unset=False))
+
+        if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
             break
+
         tool_results = []
-        for block in resp.content:
-            if block.type == "tool_use":
-                summary, payload = await tool_executor(block.name, block.input)
-                collected.append(payload)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": summary,
-                })
-        create_kwargs["messages"].append({"role": "user", "content": tool_results})
+        for tc in choice.message.tool_calls:
+            args = json.loads(tc.function.arguments)
+            summary, payload = await tool_executor(tc.function.name, args)
+            collected.append(payload)
+            tool_results.append({
+                "role":         "tool",
+                "tool_call_id": tc.id,
+                "content":      summary,
+            })
+        msgs.extend(tool_results)
 
     return collected
 
