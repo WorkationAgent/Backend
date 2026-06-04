@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 from pydantic import BaseModel
 
 
@@ -19,9 +19,10 @@ class RegionCandidate(BaseModel):
     living_area: str
     description: str
     tags: list[str]
-    match_reasons: list[str]
+    match_summary: str
     weaknesses: list[str]
     is_best: bool = False
+    photo_url: Optional[str] = None
 
 
 class PlanResponse(BaseModel):
@@ -37,44 +38,47 @@ class SelectRegionRequest(BaseModel):
     region_id: str
 
 
-class EvaluatedItem(BaseModel):
-    name: str
-    rating: Optional[float] = None
-    description: Optional[str] = None
-    distance_text: Optional[str] = None
+MapPointKind = Literal["stay", "work", "living", "local"]
 
 
 class MapPoint(BaseModel):
     name: str
-    category: str
-    latitude: float
-    longitude: float
+    kind: MapPointKind
+    lat: float
+    lng: float
     description: Optional[str] = None
 
 
+class EvaluatedItem(BaseModel):
+    name: str
+    sub: str            # 짧은 설명 / 거리
+    rating: float = 0.0
+
+
+class EvaluationSection(BaseModel):
+    score: float = 0.0
+    summary: str = ""
+    items: list[EvaluatedItem] = []
+
+
 class CategoryScores(BaseModel):
-    work: Optional[float] = None
-    living: Optional[float] = None
-    local: Optional[float] = None
+    work: float = 0.0
+    living: float = 0.0
+    local: float = 0.0
 
 
 class AccommodationResult(BaseModel):
     rank: int
     overall_score: float
-    category_scores: CategoryScores
     name: str
-    accommodation_id: str
-    location_text: Optional[str] = None
+    address: str
+    center: dict[str, float]    # {"lat": ..., "lng": ...}
     map_points: list[MapPoint] = []
-    matched_conditions: list[str] = []
-    work_summary: Optional[str] = None
-    living_summary: Optional[str] = None
-    local_summary: Optional[str] = None
-    work_environment: list[EvaluatedItem] = []
-    living_elements: list[EvaluatedItem] = []
-    local_experiences: list[EvaluatedItem] = []
+    category_scores: CategoryScores
+    sections: dict[str, EvaluationSection]   # work / living / local
 
 
 class RecommendResponse(BaseModel):
     recommended_region: str
+    results_subtitle: str
     candidates: list[AccommodationResult]
