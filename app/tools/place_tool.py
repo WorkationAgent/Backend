@@ -98,54 +98,54 @@ async def _search_via_kakao(
     workplaces: list[dict] = []
     seen_ids: set[str] = set()
 
-  async with httpx.AsyncClient(timeout=5.0) as client:
-    for keyword in keywords:
-        ptype = _KNOWN_KEYWORD_TYPES.get(keyword, "workspace")
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for keyword in keywords:
+            ptype = _KNOWN_KEYWORD_TYPES.get(keyword, "workspace")
 
-        params = {
-            "query":  keyword,
-            "x":      mapx,
-            "y":      mapy,
-            "radius": min(radius_m, 20000),
-            "size":   5,
-            "sort":   "distance",
-        }
-        resp = await client.get(
-            f"{KAKAO_LOCAL_URL}/search/keyword.json",
-            headers=headers,
-            params=params,
-        )
-        resp.raise_for_status()
+            params = {
+                "query":  keyword,
+                "x":      mapx,
+                "y":      mapy,
+                "radius": min(radius_m, 20000),
+                "size":   5,
+                "sort":   "distance",
+            }
+            resp = await client.get(
+                f"{KAKAO_LOCAL_URL}/search/keyword.json",
+                headers=headers,
+                params=params,
+            )
+            resp.raise_for_status()
 
-        for doc in resp.json().get("documents", []):
-            place_id = str(doc.get("id", ""))
-            if place_id in seen_ids:
-                continue
+            for doc in resp.json().get("documents", []):
+                place_id = str(doc.get("id", ""))
+                if place_id in seen_ids:
+                    continue
 
-            place_lon = _to_float(doc.get("x"))
-            place_lat = _to_float(doc.get("y"))
-            if place_lat is None or place_lon is None:
-                continue
+                place_lon = _to_float(doc.get("x"))
+                place_lat = _to_float(doc.get("y"))
+                if place_lat is None or place_lon is None:
+                    continue
 
-            dist_km = calc_distance_km(mapy, mapx, place_lat, place_lon)
-            if by_car:
-                travel_min = round(dist_km / SEARCH_RADIUS_CAR_SPEED_KMH * 60)
-                transport_type = "car"
-            else:
-                travel_min = calc_walk_minutes(mapy, mapx, place_lat, place_lon)
-                transport_type = "walk" if travel_min <= 15 else "car"
+                dist_km = calc_distance_km(mapy, mapx, place_lat, place_lon)
+                if by_car:
+                    travel_min = round(dist_km / SEARCH_RADIUS_CAR_SPEED_KMH * 60)
+                    transport_type = "car"
+                else:
+                    travel_min = calc_walk_minutes(mapy, mapx, place_lat, place_lon)
+                    transport_type = "walk" if travel_min <= 15 else "car"
 
-            a = _AMENITY_BY_TYPE.get(ptype, _AMENITY_BY_TYPE["workspace"])
-            seen_ids.add(place_id)
-            workplaces.append(_build_place(
-                name=doc.get("place_name", ""),
-                ptype=ptype,
-                distance_min=travel_min,
-                transport_type=transport_type,
-                amenities=a,
-                lat=place_lat,
-                lng=place_lon,
-            ))
+                a = _AMENITY_BY_TYPE.get(ptype, _AMENITY_BY_TYPE["workspace"])
+                seen_ids.add(place_id)
+                workplaces.append(_build_place(
+                    name=doc.get("place_name", ""),
+                    ptype=ptype,
+                    distance_min=travel_min,
+                    transport_type=transport_type,
+                    amenities=a,
+                    lat=place_lat,
+                    lng=place_lon,
+                ))
 
     workplaces.sort(key=lambda w: w["distance_min"])
     return workplaces[:5]

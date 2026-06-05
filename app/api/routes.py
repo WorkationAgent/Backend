@@ -102,8 +102,8 @@ def _to_evaluated_items(items: list) -> list[EvaluatedItem]:
         except Exception:
             d = {}
         result.append(EvaluatedItem(
-            name=d.get("name", ""),
-            sub=d.get("description", d.get("sub", "")),
+            name=d.get("name") or "",
+            sub=(d.get("description") or d.get("sub") or ""),
             distance_text=d.get("distance_text") or None,
         ))
     return result
