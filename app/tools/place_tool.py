@@ -1,8 +1,9 @@
 """
 place_tool.py — 카카오 로컬 API 기반 작업 공간 검색 도구
 
-Work Agent가 숙소 주변의 카페·공유오피스·스터디카페·도서관을
+Work Agent가 숙소 주변의 작업 가능 장소를
 검색하고 이동수단(도보/자차)에 맞는 접근성을 계산하는 데 사용한다.
+검색 키워드는 work_agent에서 LLM이 생성해 전달한다.
 """
 
 from app.config.settings import (
@@ -21,21 +22,22 @@ _AMENITY_BY_TYPE: dict[str, tuple] = {
     "coworking":  (True,  True,  True,  True,  True,  False, True,  True),
     "study_cafe": (True,  True,  True,  True,  True,  False, False, False),
     "library":    (True,  True,  True,  True,  True,  False, False, True),
+    "workspace":  (True,  True,  True,  None,  True,  False, True,  False),
 }
 
-_KEYWORD_TO_TYPE: dict[str, str] = {
-    "카페":      "cafe",
-    "공유오피스": "coworking",
-    "스터디카페": "study_cafe",
-    "도서관":    "library",
+# 잘 알려진 키워드 → 타입 매핑 (편의시설 추정에 사용)
+_KNOWN_KEYWORD_TYPES: dict[str, str] = {
+    "카페":           "cafe",
+    "공유오피스":      "coworking",
+    "코워킹스페이스":  "coworking",
+    "스터디카페":      "study_cafe",
+    "도서관":          "library",
 }
 
 _DUMMY_TEMPLATES: list[tuple] = [
-    ("감성 카페 A",   "cafe",       0.002,  0.001, True,  True,  True,  True,  False, False, False, False),
-    ("공유오피스 B",  "coworking",  0.004,  0.003, True,  True,  True,  True,  True,  False, True,  True),
-    ("스터디카페 C",  "study_cafe", 0.003, -0.002, True,  True,  True,  True,  True,  False, False, False),
-    ("시립 도서관 D", "library",   -0.005,  0.004, True,  True,  True,  True,  True,  False, False, True),
-    ("로컬 카페 E",   "cafe",      -0.001, -0.003, True,  False, False, False, False, True,  False, False),
+    ("작업 공간 A", "workspace", 0.002,  0.001, True,  True,  True,  None,  True,  False, True,  False),
+    ("작업 공간 B", "workspace", 0.004,  0.003, True,  True,  True,  True,  True,  False, True,  True),
+    ("작업 공간 C", "workspace", 0.003, -0.002, True,  True,  True,  True,  True,  False, False, False),
 ]
 
 
@@ -51,6 +53,7 @@ def search_workplaces(
     mapy: float,
     transport: str | None = None,
     radius_km: float | None = None,
+    keywords: list[str] | None = None,
 ) -> list[dict]:
     """카카오 로컬 API로 숙소 주변 작업 가능 장소를 검색한다.
 
@@ -63,6 +66,7 @@ def search_workplaces(
         mapy:      숙소 위도 (KTO mapy)
         transport: 사용자 이동수단 문자열 (예: "도보 위주 뚜벅이", "자차")
         radius_km: 검색 반경(km). None이면 이동수단 기준으로 자동 설정.
+        keywords:  검색할 키워드 리스트. None이면 기본 키워드 사용.
 
     Returns:
         작업 가능 장소 목록 (이동 시간 오름차순, 최대 5개).
@@ -72,8 +76,10 @@ def search_workplaces(
     if radius_km is None:
         radius_km = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
 
+    search_keywords = keywords or ["카페", "스터디카페", "공유오피스", "도서관"]
+
     try:
-        return _search_via_kakao(mapx, mapy, radius_km, by_car)
+        return _search_via_kakao(mapx, mapy, radius_km, by_car, search_keywords)
     except Exception:
         return _search_dummy(mapx, mapy, radius_km)
 
@@ -83,6 +89,7 @@ def _search_via_kakao(
     mapy: float,
     radius_km: float,
     by_car: bool,
+    keywords: list[str],
 ) -> list[dict]:
     """카카오 로컬 키워드 검색 API를 호출해 작업 공간 목록을 반환한다."""
     import httpx
@@ -91,12 +98,14 @@ def _search_via_kakao(
     workplaces: list[dict] = []
     seen_ids: set[str] = set()
 
-    for keyword, ptype in _KEYWORD_TO_TYPE.items():
+    for keyword in keywords:
+        ptype = _KNOWN_KEYWORD_TYPES.get(keyword, "workspace")
+
         params = {
             "query":  keyword,
             "x":      mapx,
             "y":      mapy,
-            "radius": min(int(radius_km * 1000), 20000),  # 카카오 최대 20km
+            "radius": min(int(radius_km * 1000), 20000),
             "size":   5,
             "sort":   "distance",
         }
@@ -126,7 +135,7 @@ def _search_via_kakao(
                 travel_min = calc_walk_minutes(mapy, mapx, place_lat, place_lon)
                 transport_type = "walk" if travel_min <= 15 else "car"
 
-            a = _AMENITY_BY_TYPE[ptype]
+            a = _AMENITY_BY_TYPE.get(ptype, _AMENITY_BY_TYPE["workspace"])
             seen_ids.add(place_id)
             workplaces.append(_build_place(
                 name=doc.get("place_name", ""),
@@ -134,6 +143,8 @@ def _search_via_kakao(
                 distance_min=travel_min,
                 transport_type=transport_type,
                 amenities=a,
+                lat=place_lat,
+                lng=place_lon,
             ))
 
     workplaces.sort(key=lambda w: w["distance_min"])
@@ -156,6 +167,8 @@ def _search_dummy(mapx: float, mapy: float, radius_km: float) -> list[dict]:
             distance_min=walk_min,
             transport_type="walk" if walk_min <= 15 else "car",
             amenities=tuple(amenity_vals),
+            lat=place_lat,
+            lng=place_lon,
         ))
     return workplaces[:5]
 
@@ -166,12 +179,16 @@ def _build_place(
     distance_min: int,
     transport_type: str,
     amenities: tuple,
+    lat: float = 0.0,
+    lng: float = 0.0,
 ) -> dict:
     """장소 딕셔너리를 표준 형태로 조립한다."""
-    wifi, outlet, long_stay, quiet, large_table, pet, craft, parking = amenities  # quiet: True/False/None
+    wifi, outlet, long_stay, quiet, large_table, pet, craft, parking = amenities
     return {
         "name":           name,
         "type":           ptype,
+        "lat":            lat,
+        "lng":            lng,
         "distance_min":   distance_min,
         "transport_type": transport_type,
         "wifi":           wifi,
