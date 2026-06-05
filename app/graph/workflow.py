@@ -1,3 +1,19 @@
+"""
+목표 그래프 구조 (docs/orchestration_worker.md 참고):
+
+    planner_start
+       └─ 줄글 파싱 · UserInput 구조화 · 5개 조건 해석 · priority_weights 산출
+            ↓
+    human_select  ← Stay Phase 1 결과로 사용자 지역 선택 (Human-in-the-loop)
+            ↓
+    planner_finish
+       └─ Stay Phase 2 (숙소 탐색)
+          → [동적 워커 선택] Living / Work(조건부) / Local(조건부) 병렬 실행
+          → 코드 기반 가중 평균 종합 점수 계산
+          → LLM 정성 요약 생성
+          → 최종 출력
+"""
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 

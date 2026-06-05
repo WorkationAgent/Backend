@@ -72,14 +72,18 @@ async def _get(url: str, params: dict) -> dict:
 
 
 def _items(data: dict) -> list[dict]:
+    if not isinstance(data, dict):
+        return []
     items = (
         data.get("response", {})
             .get("body", {})
-            .get("items", {})
-            .get("item", [])
+            .get("items") or {}
     )
+    if not isinstance(items, dict):
+        return []
+    item = items.get("item", [])
     # KTO는 결과 1개일 때 dict로 옴
-    return [items] if isinstance(items, dict) else items
+    return [item] if isinstance(item, dict) else (item if isinstance(item, list) else [])
 
 
 def _to_kto_item(raw: dict, default_type: int = 12) -> KTOItem:
@@ -157,6 +161,39 @@ async def search_festival(
 
     data = await _get(f"{KTO_BASE_URL}/searchFestival2", params)
     return [_to_kto_item(it, default_type=15) for it in _items(data)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [기본 API] areaBasedList2 — 시군구 단위 지역 대표 명소
+# ─────────────────────────────────────────────────────────────────────────────
+async def area_based_list(
+    area_code: str,
+    sigungu_code: Optional[str] = None,
+    content_type_id: Optional[int] = None,
+    num_of_rows: int = 20,
+    arrange: str = "P",   # P=인기순(대표성), O=제목순, Q=수정일순
+) -> list[KTOItem]:
+    """areaBasedList2 — 시군구 단위 대표 관광지 (KTO KorService2).
+
+    arrange='P'(인기순)으로 받으면 그 지역의 '대표 명소'에 가까운 순위가 됨.
+    """
+    params = {
+        "serviceKey": KTO_API_KEY,
+        "areaCode": area_code,
+        "MobileOS": "ETC",
+        "MobileApp": "WorkationAgent",
+        "_type": "json",
+        "numOfRows": num_of_rows,
+        "pageNo": 1,
+        "arrange": arrange,
+    }
+    if sigungu_code:
+        params["sigunguCode"] = sigungu_code
+    if content_type_id is not None:
+        params["contentTypeId"] = content_type_id
+
+    data = await _get(f"{KTO_BASE_URL}/areaBasedList2", params)
+    return [_to_kto_item(it) for it in _items(data)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

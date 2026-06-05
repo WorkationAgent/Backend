@@ -73,6 +73,66 @@ async def category_search(
     return [_to_place(it) for it in data.get("documents", [])]
 
 
+# ── 좌표 → 행정 구역 (KTO 코드 도출용) ──────────────────────────────────
+class RegionInfo(BaseModel):
+    sido: str = ""       # region_1depth_name, 예: "전라북도"
+    sigungu: str = ""    # region_2depth_name, 예: "남원시"
+    dong: str = ""       # region_3depth_name, 예: "도촌동"
+
+
+async def coord2regioncode(
+    latitude: float, longitude: float
+) -> Optional[RegionInfo]:
+    """좌표 → 행정 구역 이름 (Kakao coord2regioncode).
+
+    KTO areaCode/sigunguCode를 도출하기 위한 1단계.
+    반환된 시도·시군구 이름을 KTO 코드 테이블에서 매칭해 코드로 변환한다.
+    """
+    headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
+    params = {"x": longitude, "y": latitude}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(
+            f"{KAKAO_LOCAL_URL}/geo/coord2regioncode.json",
+            headers=headers, params=params,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    docs = data.get("documents", [])
+    if not docs:
+        return None
+    # 법정동(B) 우선, 없으면 첫 번째
+    doc = next((d for d in docs if d.get("region_type") == "B"), docs[0])
+    return RegionInfo(
+        sido=doc.get("region_1depth_name", ""),
+        sigungu=doc.get("region_2depth_name", ""),
+        dong=doc.get("region_3depth_name", ""),
+    )
+
+
+async def search_accommodations(region_name: str, max_results: int = 15) -> list[KakaoPlace]:
+    """지역명 기반 숙박시설 검색 (좌표 없이 전국 키워드 검색).
+
+    Stay Agent가 KTO 결과를 보완하기 위해 사용.
+    """
+    cleaned = region_name.replace("생활권", "").strip()
+    keywords = [f"{cleaned} 펜션", f"{cleaned} 게스트하우스", f"{cleaned} 호텔", f"{cleaned} 숙소"]
+
+    seen_ids: set[str] = set()
+    results: list[KakaoPlace] = []
+
+    for kw in keywords:
+        places = await keyword_search(kw, size=min(max_results, 15))
+        for p in places:
+            if p.place_id not in seen_ids:
+                seen_ids.add(p.place_id)
+                results.append(p)
+        if len(results) >= max_results:
+            break
+
+    return results[:max_results]
+
+
 async def keyword_search(
     query: str,
     latitude: Optional[float] = None,

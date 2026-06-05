@@ -4,13 +4,20 @@ import json
 import re
 from typing import Optional, Type, TypeVar, Union
 
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+# ── LLM 프로바이더 설정 ──────────────────────────────────────────────
+# 현재: OpenAI 사용 (Anthropic 크레딧 소진 시)
+# 전환 방법: 아래 주석 해제 후 OpenAI 관련 줄 주석 처리
+#
+# [Anthropic으로 전환 시]
+# from langchain_anthropic import ChatAnthropic
+# from app.config.settings import ANTHROPIC_API_KEY, LLM_MODEL, ...
+# _llm = ChatAnthropic(model="claude-opus-4-8", api_key=ANTHROPIC_API_KEY, max_tokens=4096)
+
+from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.settings import (
-    ANTHROPIC_API_KEY,
     LLM_MODEL,
     OPENAI_API_KEY,
     OPENAI_EMBEDDING_MODEL,
@@ -18,7 +25,7 @@ from app.config.settings import (
 
 T = TypeVar("T", bound=BaseModel)
 
-_anthropic = ChatAnthropic(model=LLM_MODEL, api_key=ANTHROPIC_API_KEY, max_tokens=4096)
+_llm = ChatOpenAI(model=LLM_MODEL, api_key=OPENAI_API_KEY, max_tokens=4096)
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -48,10 +55,12 @@ async def call_llm(
     model: Optional[str] = None,
     max_retries: int = 1,
 ) -> Union[str, T]:
-    """공용 Claude 호출."""
-    llm = _anthropic
+    """공용 OpenAI 호출."""
+    from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+
+    llm = _llm
     if model and model != LLM_MODEL:
-        llm = ChatAnthropic(model=model, api_key=ANTHROPIC_API_KEY, max_tokens=max_tokens)
+        llm = ChatOpenAI(model=model, api_key=OPENAI_API_KEY, max_tokens=max_tokens)
 
     lc_messages = []
     if system:
@@ -60,7 +69,6 @@ async def call_llm(
         if msg["role"] == "user":
             lc_messages.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
-            from langchain_core.messages import AIMessage
             lc_messages.append(AIMessage(content=msg["content"]))
 
     if output_schema is None:
@@ -100,6 +108,73 @@ async def call_llm(
         f"LLM JSON 파싱 {max_retries + 1}회 실패: {last_error}\n"
         f"마지막 응답: {last_text[:500]}"
     )
+
+
+# ── Tool Use 루프 (OpenAI function calling) ───────────────────────────
+async def call_llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    tool_executor,
+    system: Optional[str] = None,
+    max_rounds: int = 3,
+    max_tokens: int = 2048,
+) -> list:
+    """Tool use 루프 — OpenAI function calling 사용.
+
+    tools 형식 (Anthropic input_schema → OpenAI parameters 자동 변환):
+        [{"name": "...", "description": "...", "input_schema": {...}}]
+    """
+    # Anthropic 형식 → OpenAI 형식 변환
+    oai_tools = []
+    for t in tools:
+        oai_tools.append({
+            "type": "function",
+            "function": {
+                "name":        t["name"],
+                "description": t.get("description", ""),
+                "parameters":  t.get("input_schema", t.get("parameters", {})),
+            }
+        })
+
+    msgs = list(messages)
+    if system:
+        msgs = [{"role": "system", "content": system}] + msgs
+
+    collected: list = []
+    for _ in range(max_rounds):
+        resp = await _openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=msgs,
+            tools=oai_tools,
+            max_tokens=max_tokens,
+            parallel_tool_calls=True,
+        )
+        choice = resp.choices[0]
+        msgs.append(choice.message.model_dump(exclude_unset=False))
+
+        if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
+            break
+
+        # 한 라운드에 여러 tool_call이 있으면 병렬 실행
+        async def _exec(tc):
+            args = json.loads(tc.function.arguments)
+            summary, payload = await tool_executor(tc.function.name, args)
+            return tc.id, summary, payload
+
+        import asyncio as _asyncio
+        raw = await _asyncio.gather(*[_exec(tc) for tc in choice.message.tool_calls])
+
+        tool_results = []
+        for tc_id, summary, payload in raw:
+            collected.append(payload)
+            tool_results.append({
+                "role":         "tool",
+                "tool_call_id": tc_id,
+                "content":      summary,
+            })
+        msgs.extend(tool_results)
+
+    return collected
 
 
 # ── 임베딩 ────────────────────────────────────────────────────────────

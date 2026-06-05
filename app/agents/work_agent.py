@@ -49,13 +49,14 @@ def _enrich_with_reviews(
 ) -> list[dict]:
     """가장 가까운 top_n개 작업 공간에 네이버 후기를 추가하고 추정값을 보정한다.
 
-    search_tool에서 추출한 wifi/outlet/long_stay 값이 있으면
+    search_tool에서 추출한 wifi/outlet/long_stay/quiet 값이 있으면
     place_tool의 장소 유형 기반 추정값을 실제 후기 데이터로 덮어쓴다.
+    cafe의 quiet 기본값은 None(불확실)이며, 후기에서 판단되면 True/False로 확정된다.
     """
     for wp in workplaces[:top_n]:
         review_data = search_workplace_reviews(wp["name"], region_name)
         wp["reviews"] = review_data.get("raw_review", "")
-        for field in ("wifi", "outlet", "long_stay"):
+        for field in ("wifi", "outlet", "long_stay", "quiet"):
             extracted = review_data.get(field)
             if extracted is not None:
                 wp[field] = extracted  # 추정값 → 실제 후기값으로 보정
@@ -133,10 +134,15 @@ async def work_agent(state: GraphState) -> dict:
     evaluations: list[WorkEvaluation] = []
     warnings: list[str] = []
 
-    # 조건 추출은 한 번만 — 모든 숙소 평가에 공통 적용
-    requirements = await _extract_requirements_llm(user_input)
-    must_have: list[str] = requirements.get("must_have", [])
-    prefer: list[str] = requirements.get("prefer", [])
+    # Planner 해석 조건 우선 사용, 없으면 user_input에서 자체 추출
+    planner_must_have: list[str] = state.get("must_have_conditions", [])
+    if planner_must_have:
+        must_have = planner_must_have
+        prefer: list[str] = state.get("preference_conditions", [])
+    else:
+        requirements = await _extract_requirements_llm(user_input)
+        must_have = requirements.get("must_have", [])
+        prefer = requirements.get("prefer", [])
 
     transport = user_input.transport
     by_car = is_car_transport(transport)

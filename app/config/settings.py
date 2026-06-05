@@ -3,10 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Anthropic ─────────────────────────────────────────────────
+# ── Anthropic (tool use 전용으로만 유지) ──────────────────────
 ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
-LLM_MODEL: str = "claude-opus-4-8"
-LLM_MODEL_SONNET: str = "claude-sonnet-4-6"  # 구조화·평가 작업용 (비용 절감)
+
+# ── OpenAI (메인 LLM) ─────────────────────────────────────────
+LLM_MODEL: str = os.environ["OPENAI_MODEL"]
+LLM_MODEL_SONNET: str = os.environ.get("OPENAI_MODEL_MINI", os.environ["OPENAI_MODEL"])
 
 # ── OpenAI ────────────────────────────────────────────────────
 OPENAI_API_KEY: str = os.environ["OPENAI_API_KEY"]
@@ -58,6 +60,18 @@ RETRY_RADIUS_EXPAND_M: int = 1000                                  # 도보 확�
 RETRY_RADIUS_EXPAND_KM: float = RETRY_RADIUS_EXPAND_M / 1000     # 1.0km
 RETRY_CAR_EXPAND_M: int = 5000                                     # 자동차 확장 (+5km)
 RETRY_CAR_EXPAND_MIN: int = 30                                     # 자동차 확장 30분
+
+# ── 버스정류장 데이터 ─────────────────────────────────────────
+import pathlib as _pathlib
+BUS_STOPS_CSV: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "bus_stops.csv"
+)
+MEDICAL_HOSPITALS_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_hospitals.xlsx"
+)
+MEDICAL_PHARMACIES_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_pharmacies.xlsx"
+)
 
 # ── 재호출 기준 ───────────────────────────────────────────────
 RETRY_CONFIDENCE_THRESHOLD: int = 54    # confidence 54 이하면 재호출

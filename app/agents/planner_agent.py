@@ -23,7 +23,7 @@ import json
 from typing import Optional
 
 from app.agents.living_agent import living_agent
-from app.agents.local_agent import evaluate_accommodations
+from app.agents.local_agent import local_agent, evaluate_accommodations
 from app.agents.stay_agent import accommodation_search_node, region_search_node
 from app.agents.work_agent import work_agent
 from app.core.llm import call_llm
@@ -76,12 +76,38 @@ async def interpret_user_input(user_input: UserInput) -> dict:
         max_tokens=1500,
     )
     result = json.loads(text)
+    weights = result.get("priority_weights", {})
+
+    # ── 명시적 신호 보정 ────────────────────────────────────────
+    # Work
+    if user_input.work_required is False or user_input.work_required is None:
+        weights["work"] = 0.0
+
+    # Local — tourism_hobby 없고 휴식형이면 0
+    if not user_input.tourism_hobby:
+        purpose = (user_input.purpose or "").lower()
+        if any(kw in purpose for kw in ["휴식", "쉬", "촌캉스", "rest", "vacation"]):
+            weights["local"] = 0.0
+        else:
+            weights["local"] = min(weights.get("local", 0.1), 0.05)
+
+    # Living — 단기(5일 이하)면 낮추기
+    duration = (user_input.duration or "").lower()
+    is_short = any(kw in duration for kw in ["1일", "2일", "3일", "4일", "5일", "2박", "3박", "4박"])
+    if is_short:
+        weights["living"] = min(weights.get("living", 0.25), 0.20)
+
+    # 합이 1.0 되도록 재정규화
+    total = sum(weights.values())
+    if total > 0:
+        weights = {k: round(v / total, 3) for k, v in weights.items()}
+
     return {
         "parsed_preferences":    result.get("parsed_preferences", {}),
         "must_have_conditions":  result.get("must_have_conditions", []),
         "avoid_conditions":      result.get("avoid_conditions", []),
         "preference_conditions": result.get("preference_conditions", []),
-        "priority_weights":      result.get("priority_weights", {}),
+        "priority_weights":      weights,
     }
 
 
@@ -154,19 +180,26 @@ async def planner_phase2(state: GraphState) -> dict:
     normalized = normalize_accommodations(raw)
     state = {**state, "normalized_accommodations": normalized}
 
-    # 3. Living / Work / Local 병렬 실행
+    # 3. 동적 워커 선택 (오케스트레이터-워커)
     errors: list  = list(state.get("errors") or [])
     warnings: list = list(state.get("warnings") or [])
     retry_count   = dict(state.get("retry_count") or {})
 
-    living_state = {**state, "candidate_accommodations": normalized}
+    user_input = state.get("user_input")
+    priority_weights = state.get("priority_weights", {})
 
-    raw_results = await asyncio.gather(
-        living_agent(living_state),
-        _call_work(state, normalized),
-        _call_local(state, normalized),
-        return_exceptions=True,
-    )
+    run_work   = getattr(user_input, "work_required", None) is True
+    run_living = priority_weights.get("living", 0.25) > 0.05
+    run_local  = priority_weights.get("local", 0.10) > 0.05
+
+    worker_state = {**state, "candidate_accommodations": normalized}
+
+    coros = []
+    if run_living: coros.append(living_agent(worker_state))
+    if run_work:   coros.append(work_agent(worker_state))
+    if run_local:  coros.append(local_agent(worker_state))
+
+    raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
     merged: dict = {
         "candidate_accommodations":  raw,
@@ -253,6 +286,26 @@ def _assemble_accommodations_data(
     return result
 
 
+def _calculate_final_score(
+    work_score: float | None,
+    living_score: float | None,
+    local_score: float | None,
+    stay_score: float | None,
+    priority_weights: dict,
+) -> float:
+    """priority_weights 기반 코드 가중 평균 (LLM 대신 결정적 계산)."""
+    score = 0.0
+    if work_score is not None:
+        score += work_score   * priority_weights.get("work", 0)
+    if living_score is not None:
+        score += living_score * priority_weights.get("living", 0)
+    if local_score is not None:
+        score += local_score  * priority_weights.get("local", 0)
+    if stay_score is not None:
+        score += stay_score   * priority_weights.get("accommodation", 0)
+    return round(score, 1)
+
+
 async def build_final_output(
     normalized: list[dict],
     work_evals: list,
@@ -260,15 +313,35 @@ async def build_final_output(
     local_evals: list,
     state: GraphState,
 ) -> FinalOutput:
-    """세 Agent 평가 결과를 LLM에 전달해 최종 추천 순위를 생성한다."""
+    """에이전트 평가 결과를 종합해 최종 추천 순위를 생성한다.
+
+    total_score: 코드 기반 가중 평균 (priority_weights 사용)
+    순위·정성 요약: LLM 생성
+    """
+    priority_weights = state.get("priority_weights") or {}
     accommodations_data = _assemble_accommodations_data(
         normalized, work_evals, living_evals, local_evals
     )
 
+    # 코드로 total_score 계산 후 data에 주입
+    for acc in accommodations_data:
+        acc["total_score"] = _calculate_final_score(
+            work_score   = acc["work_eval"].get("score"),
+            living_score = acc["living_eval"].get("score"),
+            local_score  = acc["local_eval"].get("score"),
+            stay_score   = acc.get("stay_score"),
+            priority_weights=priority_weights,
+        )
+
+    # total_score 기준 정렬 후 rank 부여
+    accommodations_data.sort(key=lambda x: x["total_score"], reverse=True)
+    for i, acc in enumerate(accommodations_data):
+        acc["rank"] = i + 1
+
     user_msg = build_final_output_user(
         accommodations_data=accommodations_data,
         must_have_conditions=state.get("must_have_conditions") or [],
-        priority_weights=state.get("priority_weights") or {},
+        priority_weights=priority_weights,
         parsed_preferences=state.get("parsed_preferences") or {},
         selected_region=state.get("selected_region", {}).get("region_name", ""),
     )
@@ -280,21 +353,3 @@ async def build_final_output(
     )
 
 
-# ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
-
-async def _call_work(state: GraphState, normalized: list[dict]) -> dict:
-    result = await work_agent({**state, "candidate_accommodations": normalized})
-    return {
-        "work_evaluations": result.get("work_evaluations", []),
-        "warnings":         result.get("warnings", []),
-    }
-
-
-async def _call_local(state: GraphState, normalized: list[dict]) -> dict:
-    stay_dates = state.get("parsed_preferences", {}).get("stay_dates")
-    evaluations = await evaluate_accommodations(
-        accommodations=normalized,
-        user_input=state["user_input"],
-        stay_dates=stay_dates,
-    )
-    return {"local_evaluations": list(evaluations)}

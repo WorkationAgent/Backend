@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agents.stay_agent import region_search_node, accommodation_search_node
 from app.agents.living_agent import living_agent
-from app.agents.local_agent import evaluate_accommodations
+from app.agents.local_agent import local_agent, evaluate_accommodations
 from app.agents.work_agent import work_agent
 from app.agents.planner_agent import parse_raw_input, interpret_user_input
 from app.schemas.user_input import UserInput
@@ -428,17 +428,17 @@ async def test_full_pipeline(raw_text: str) -> None:
     state = {**state, "candidate_accommodations": raw_accommodations}
     accommodations = _build_accommodation_list(raw_accommodations)
 
-    living_state = {**state, "candidate_accommodations": accommodations}
+    worker_state = {**state, "candidate_accommodations": accommodations}
     living_result, work_result, local_result = await asyncio.gather(
-        living_agent(living_state),
-        work_agent({**state, "candidate_accommodations": accommodations}),
-        evaluate_accommodations(accommodations, user_input),
+        living_agent(worker_state),
+        work_agent(worker_state),
+        local_agent(worker_state),
         return_exceptions=True,
     )
 
     living_evals = living_result.get("living_evaluations", []) if isinstance(living_result, dict) else []
     work_evals   = work_result.get("work_evaluations", []) if isinstance(work_result, dict) else []
-    local_evals  = local_result if isinstance(local_result, list) else []
+    local_evals  = local_result.get("local_evaluations", []) if isinstance(local_result, dict) else []
 
     living_map = {str(e.accommodation_id): e for e in living_evals}
     work_map   = {str(e.accommodation_id): e for e in work_evals}
