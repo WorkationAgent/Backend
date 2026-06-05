@@ -150,7 +150,7 @@ async def _process_one_accommodation(
     if longitude is None or latitude is None:
         workplaces: list[dict] = []
     else:
-        workplaces = search_workplaces(
+        workplaces = await search_workplaces(
             longitude, latitude,
             transport=transport_str,
             keywords=search_keywords,
@@ -168,7 +168,7 @@ async def _process_one_accommodation(
     needs_retry = (not workplaces) or (confidence <= RETRY_CONFIDENCE_THRESHOLD)
     if needs_retry and longitude is not None and latitude is not None:
         expanded = SEARCH_RADIUS_CAR_KM * 1.5 if by_car else SEARCH_RADIUS_WALK_KM * 2.0
-        retry_workplaces = search_workplaces(
+        retry_workplaces = await search_workplaces(
             longitude, latitude,
             transport=transport_str,
             radius_km=expanded,
