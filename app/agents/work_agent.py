@@ -30,9 +30,11 @@ import logging
 
 from app.core.llm import call_llm
 from app.config.settings import (
-    SEARCH_RADIUS_CAR_KM,
-    SEARCH_RADIUS_WALK_KM,
+    SEARCH_RADIUS_CAR_M,
+    SEARCH_RADIUS_WALK_M,
     RETRY_CONFIDENCE_THRESHOLD,
+    RETRY_MAX_COUNT,
+    RETRY_RADIUS_EXPAND_M,
 )
 from app.core.state import GraphState
 from app.prompts.work_prompts import (

@@ -36,3 +36,7 @@ htmlcov/
 # 로그
 *.log
 logs/
+
+# 데이터 파일 (대용량)
+data/*.csv
+data/*.xlsx

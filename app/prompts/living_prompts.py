@@ -87,6 +87,8 @@ needs_retry=False이면 retry_categories와 retry_keywords는 빈 값으로 반�
 
 
 EVALUATION_SYSTEM = """
+모든 응답은 반드시 한국어로 작성하세요. Do not respond in English under any circumstances.
+
 당신은 워케이션 숙소의 생활 편의성을 평가하는 전문가입니다.
 수집된 생활 인프라 탐색 결과를 바탕으로 score, confidence, summary를 산출합니다.
 

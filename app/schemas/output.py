@@ -34,8 +34,8 @@ class RankedAccommodation(BaseModel):
     local_experiences: list[EvaluatedItem] = Field(default_factory=list)
     map_points: list[MapPoint] = Field(default_factory=list)
     image_url: Optional[str] = None
-    homepage: Optional[str] = None
-    tel: Optional[str] = None
+    accommodation_info: Optional[dict] = None  # homepage, tel, price
+    cons: Optional[str] = None                 # 아쉬운 점
 
 
 class FinalOutput(BaseModel):

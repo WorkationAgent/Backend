@@ -146,8 +146,10 @@ async def _autonomous_augment(
     if not any(h and h.strip() for h in hints):
         return []
 
-    lat = accommodation["latitude"]
-    lng = accommodation["longitude"]
+    lat = accommodation.get("latitude")
+    lng = accommodation.get("longitude")
+    if lat is None or lng is None:
+        return []
     region = accommodation.get("region", "")
 
     tools = [{
@@ -217,8 +219,11 @@ async def _collect_signals(
     stay_dates: Optional[tuple[str, str]],
     radius_m: int,
 ) -> dict:
-    lat = accommodation["latitude"]
-    lng = accommodation["longitude"]
+    lat = accommodation.get("latitude")
+    lng = accommodation.get("longitude")
+    if lat is None or lng is None:
+        return {"signature_places": [], "signature_source": "none",
+                "daily_places": [], "festivals": [], "blog_snippets": [], "regional_context": []}
     region = accommodation.get("region", "")
 
     # (A) 지역 시그니처 — areaBasedList2 (행정 구역 대표 명소) + RAG
@@ -284,8 +289,10 @@ async def _fetch_signature_places(accommodation: dict):
     좌표에서 KTO 코드를 도출(_resolve_kto_area)해 areaBasedList2 호출.
     우선순위: areaBased(코드 도출 성공) > 좌표 기반 폴백(실패/결과 0).
     """
-    lat = accommodation["latitude"]
-    lng = accommodation["longitude"]
+    lat = accommodation.get("latitude")
+    lng = accommodation.get("longitude")
+    if lat is None or lng is None:
+        return [], "none"
 
     items, source = [], ""
 

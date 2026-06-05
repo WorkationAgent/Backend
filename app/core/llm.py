@@ -147,6 +147,7 @@ async def call_llm_with_tools(
             messages=msgs,
             tools=oai_tools,
             max_tokens=max_tokens,
+            parallel_tool_calls=True,
         )
         choice = resp.choices[0]
         msgs.append(choice.message.model_dump(exclude_unset=False))
@@ -154,14 +155,21 @@ async def call_llm_with_tools(
         if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
             break
 
-        tool_results = []
-        for tc in choice.message.tool_calls:
+        # 한 라운드에 여러 tool_call이 있으면 병렬 실행
+        async def _exec(tc):
             args = json.loads(tc.function.arguments)
             summary, payload = await tool_executor(tc.function.name, args)
+            return tc.id, summary, payload
+
+        import asyncio as _asyncio
+        raw = await _asyncio.gather(*[_exec(tc) for tc in choice.message.tool_calls])
+
+        tool_results = []
+        for tc_id, summary, payload in raw:
             collected.append(payload)
             tool_results.append({
                 "role":         "tool",
-                "tool_call_id": tc.id,
+                "tool_call_id": tc_id,
                 "content":      summary,
             })
         msgs.extend(tool_results)
