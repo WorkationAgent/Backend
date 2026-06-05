@@ -39,16 +39,17 @@ from app.schemas.user_input import UserInput
 
 # ── 줄글 파싱 & 해석 ──────────────────────────────────────────────────────────
 
-async def parse_raw_input(raw_text: str) -> UserInput:
-    """사용자 줄글 → UserInput 구조화."""
+async def parse_raw_input(raw_text: str) -> tuple[UserInput, list[str]]:
+    """사용자 줄글 → (UserInput, excluded_regions) 구조화."""
     text = await call_llm(
         messages=[{"role": "user", "content": PARSE_RAW_USER.format(raw_text=raw_text)}],
         system=PARSE_RAW_SYSTEM,
         max_tokens=800,
     )
     data = json.loads(text)
+    excluded_regions: list[str] = data.pop("excluded_regions", []) or []
     cleaned = {k: v for k, v in data.items() if v is not None and v != "null"}
-    return UserInput(**cleaned)
+    return UserInput(**cleaned), excluded_regions
 
 
 async def interpret_user_input(user_input: UserInput) -> dict:
@@ -97,10 +98,14 @@ async def interpret_user_input(user_input: UserInput) -> dict:
     if is_short:
         weights["living"] = min(weights.get("living", 0.25), 0.20)
 
-    # 합이 1.0 되도록 재정규화
+    # 합이 1.0 되도록 재정규화 (부동소수점 오차는 최댓값에 흡수)
     total = sum(weights.values())
     if total > 0:
         weights = {k: round(v / total, 3) for k, v in weights.items()}
+        diff = round(1.0 - sum(weights.values()), 3)
+        if diff != 0:
+            max_key = max(weights, key=weights.get)
+            weights[max_key] = round(weights[max_key] + diff, 3)
 
     return {
         "parsed_preferences":    result.get("parsed_preferences", {}),
@@ -148,8 +153,11 @@ def normalize_accommodations(stay_output: list[dict]) -> list[dict]:
             "stay_reason":     acc.get("brief_reason"),
             "score_breakdown": acc.get("score_breakdown", {}),
             "image_url":       acc.get("image_url"),
-            "homepage":        acc.get("homepage"),
-            "tel":             acc.get("tel"),
+            "accommodation_info": {
+                "homepage":   acc.get("homepage"),
+                "tel":        acc.get("tel"),
+                "price": acc.get("price"),
+            },
         })
     return result
 
@@ -159,11 +167,11 @@ def normalize_accommodations(stay_output: list[dict]) -> list[dict]:
 async def planner_phase1(state: GraphState) -> dict:
     """줄글 입력 → 구조화 → 5개 조건 해석 → Stay Agent 지역 후보 탐색."""
     raw_text: str = state.get("raw_user_input", "")
-    user_input = await parse_raw_input(raw_text)
+    user_input, excluded_regions = await parse_raw_input(raw_text)
     interpreted = await interpret_user_input(user_input)
-    state = {**state, "user_input": user_input, **interpreted}
+    state = {**state, "user_input": user_input, "excluded_regions": excluded_regions, **interpreted}
     region_result = await region_search_node(state)
-    return {"user_input": user_input, **interpreted, **region_result}
+    return {"user_input": user_input, "excluded_regions": excluded_regions, **interpreted, **region_result}
 
 
 # ── Phase 2: 숙소 검색 → 정규화 → 평가 ──────────────────────────────────────
@@ -175,10 +183,19 @@ async def planner_phase2(state: GraphState) -> dict:
     acc_result = await accommodation_search_node(state)
     state = {**state, **acc_result}
 
-    # 2. 정규화: mapx/mapy → latitude/longitude
+    # 2. 정규화: mapx/mapy → latitude/longitude (통일된 단일 포맷으로)
     raw = state.get("candidate_accommodations") or []
+    if not raw:
+        # 숙소 없으면 즉시 반환 — LLM 호출 없이 (환각 방지)
+        return {
+            "candidate_accommodations": [],
+            "errors": list(state.get("errors") or []) + ["해당 지역에서 실제 숙소를 찾지 못했습니다."],
+            "warnings": list(state.get("warnings") or []),
+            "retry_count": dict(state.get("retry_count") or {}),
+        }
+
     normalized = normalize_accommodations(raw)
-    state = {**state, "normalized_accommodations": normalized}
+    state = {**state, "candidate_accommodations": normalized}  # normalized로 통일
 
     # 3. 동적 워커 선택 (오케스트레이터-워커)
     errors: list  = list(state.get("errors") or [])
@@ -192,7 +209,7 @@ async def planner_phase2(state: GraphState) -> dict:
     run_living = priority_weights.get("living", 0.25) > 0.05
     run_local  = priority_weights.get("local", 0.10) > 0.05
 
-    worker_state = {**state, "candidate_accommodations": normalized}
+    worker_state = state  # 이미 normalized로 업데이트된 state 사용
 
     coros = []
     if run_living: coros.append(living_agent(worker_state))
@@ -202,8 +219,7 @@ async def planner_phase2(state: GraphState) -> dict:
     raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
     merged: dict = {
-        "candidate_accommodations":  raw,
-        "normalized_accommodations": normalized,
+        "candidate_accommodations": normalized,
     }
     for raw_r in raw_results:
         if isinstance(raw_r, Exception):
@@ -236,6 +252,17 @@ async def planner_phase2(state: GraphState) -> dict:
 
 # ── 최종 출력 생성 ────────────────────────────────────────────────────────────
 
+def _dump_details(details) -> dict:
+    """Pydantic 모델 또는 dict 모두 안전하게 dict로 변환."""
+    if details is None:
+        return {}
+    if hasattr(details, "model_dump"):
+        return details.model_dump()
+    if isinstance(details, dict):
+        return details
+    return {}
+
+
 def _assemble_accommodations_data(
     normalized: list[dict],
     work_evals: list,
@@ -262,25 +289,24 @@ def _assemble_accommodations_data(
             "longitude":        acc.get("longitude"),
             "stay_score":       acc.get("stay_score"),
             "stay_reason":      acc.get("stay_reason"),
-            "homepage":         acc.get("homepage"),
-            "tel":              acc.get("tel"),
+            "accommodation_info": acc.get("accommodation_info"),
             "work_eval": {
                 "score":      w.score      if w else None,
                 "confidence": w.confidence if w else None,
                 "summary":    w.summary    if w else None,
-                "details":    w.details    if w else {},
+                "details":    _dump_details(w.details) if w else {},
             },
             "living_eval": {
                 "score":      l.score      if l else None,
                 "confidence": l.confidence if l else None,
                 "summary":    l.summary    if l else None,
-                "details":    l.details    if l else {},
+                "details":    _dump_details(l.details) if l else {},
             },
             "local_eval": {
                 "score":      lo.score      if lo else None,
                 "confidence": lo.confidence if lo else None,
                 "summary":    lo.summary    if lo else None,
-                "details":    lo.details.model_dump() if lo and lo.details else {},
+                "details":    _dump_details(lo.details) if lo else {},
             },
         })
     return result
@@ -303,7 +329,7 @@ def _calculate_final_score(
         score += local_score  * priority_weights.get("local", 0)
     if stay_score is not None:
         score += stay_score   * priority_weights.get("accommodation", 0)
-    return round(score, 1)
+    return float(round(score))
 
 
 async def build_final_output(
@@ -346,10 +372,24 @@ async def build_final_output(
         selected_region=state.get("selected_region", {}).get("region_name", ""),
     )
 
-    return await call_llm(
+    final: FinalOutput = await call_llm(
         messages=[{"role": "user", "content": user_msg}],
         system=FINAL_OUTPUT_SYSTEM,
         output_schema=FinalOutput,
     )
+
+    # LLM이 total_score를 임의로 생성하지 못하도록 코드 계산값으로 강제 덮어씌우기
+    score_map = {acc["accommodation_id"]: acc["total_score"] for acc in accommodations_data}
+    for ranked in final.ranked_accommodations:
+        calculated = score_map.get(str(ranked.accommodation_id))
+        if calculated is not None:
+            ranked.total_score = float(round(calculated))
+
+    # 점수 기준으로 재정렬 후 순위 재부여 (LLM 순위 무시)
+    final.ranked_accommodations.sort(key=lambda x: x.total_score, reverse=True)
+    for i, acc in enumerate(final.ranked_accommodations):
+        acc.rank = i + 1
+
+    return final
 
 

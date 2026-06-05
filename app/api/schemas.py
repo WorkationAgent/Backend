@@ -76,6 +76,8 @@ class AccommodationResult(BaseModel):
     map_points: list[MapPoint] = []
     category_scores: CategoryScores
     sections: dict[str, EvaluationSection]   # work / living / local
+    accommodation_info: Optional[dict] = None  # homepage, tel, price
+    cons: Optional[str] = None
 
 
 class RecommendResponse(BaseModel):

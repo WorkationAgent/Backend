@@ -8,11 +8,11 @@ Work Agent가 숙소 주변의 카페·공유오피스·스터디카페·도서�
 from app.config.settings import (
     KAKAO_LOCAL_URL,
     KAKAO_REST_API_KEY,
-    SEARCH_RADIUS_CAR_KM,
+    SEARCH_RADIUS_CAR_M,
     SEARCH_RADIUS_CAR_SPEED_KMH,
-    SEARCH_RADIUS_WALK_KM,
+    SEARCH_RADIUS_WALK_M,
 )
-from app.tools.geo import haversine_km as calc_distance_km, walk_minutes as calc_walk_minutes
+from app.tools.geo import haversine_meters, haversine_km as calc_distance_km, walk_minutes as calc_walk_minutes
 
 # 장소 유형별 편의시설 추정값
 # (wifi, outlet, long_stay, quiet, large_table, pet_friendly, craft_allowed, parking)
@@ -46,42 +46,42 @@ def is_car_transport(transport: str | None) -> bool:
     return any(kw in transport for kw in ["자차", "자동차", "차량", "운전", "차로"])
 
 
-def search_workplaces(
+async def search_workplaces(
     mapx: float,
     mapy: float,
     transport: str | None = None,
-    radius_km: float | None = None,
+    radius_m: int | None = None,
 ) -> list[dict]:
     """카카오 로컬 API로 숙소 주변 작업 가능 장소를 검색한다.
 
     이동수단에 따라 검색 반경과 이동 시간 계산 방식을 분기한다.
-    - 도보/뚜벅이: SEARCH_RADIUS_WALK_KM 반경, 도보 시간
-    - 자차: SEARCH_RADIUS_CAR_KM 반경, 운전 시간 (SEARCH_RADIUS_CAR_SPEED_KMH 기준)
+    - 도보/뚜벅이: SEARCH_RADIUS_WALK_M 반경, 도보 시간
+    - 자차: SEARCH_RADIUS_CAR_M 반경, 운전 시간 (SEARCH_RADIUS_CAR_SPEED_KMH 기준)
 
     Args:
-        mapx:      숙소 경도 (KTO mapx)
-        mapy:      숙소 위도 (KTO mapy)
+        mapx:    숙소 경도 (KTO mapx)
+        mapy:    숙소 위도 (KTO mapy)
         transport: 사용자 이동수단 문자열 (예: "도보 위주 뚜벅이", "자차")
-        radius_km: 검색 반경(km). None이면 이동수단 기준으로 자동 설정.
+        radius_m:  검색 반경(m). None이면 이동수단 기준으로 자동 설정.
 
     Returns:
         작업 가능 장소 목록 (이동 시간 오름차순, 최대 5개).
         API 실패 시 좌표 기반 더미 데이터를 반환한다.
     """
     by_car = is_car_transport(transport)
-    if radius_km is None:
-        radius_km = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
+    if radius_m is None:
+        radius_m = SEARCH_RADIUS_CAR_M if by_car else SEARCH_RADIUS_WALK_M
 
     try:
-        return _search_via_kakao(mapx, mapy, radius_km, by_car)
+        return await _search_via_kakao(mapx, mapy, radius_m, by_car)
     except Exception:
-        return _search_dummy(mapx, mapy, radius_km)
+        return _search_dummy(mapx, mapy, radius_m)
 
 
-def _search_via_kakao(
+async def _search_via_kakao(
     mapx: float,
     mapy: float,
-    radius_km: float,
+    radius_m: int,
     by_car: bool,
 ) -> list[dict]:
     """카카오 로컬 키워드 검색 API를 호출해 작업 공간 목록을 반환한다."""
@@ -91,20 +91,20 @@ def _search_via_kakao(
     workplaces: list[dict] = []
     seen_ids: set[str] = set()
 
-    for keyword, ptype in _KEYWORD_TO_TYPE.items():
+    async with httpx.AsyncClient(timeout=5.0) as client:
+      for keyword, ptype in _KEYWORD_TO_TYPE.items():
         params = {
             "query":  keyword,
             "x":      mapx,
             "y":      mapy,
-            "radius": min(int(radius_km * 1000), 20000),  # 카카오 최대 20km
+            "radius": min(radius_m, 20000),
             "size":   5,
             "sort":   "distance",
         }
-        resp = httpx.get(
+        resp = await client.get(
             f"{KAKAO_LOCAL_URL}/search/keyword.json",
             headers=headers,
             params=params,
-            timeout=5,
         )
         resp.raise_for_status()
 
@@ -140,14 +140,14 @@ def _search_via_kakao(
     return workplaces[:5]
 
 
-def _search_dummy(mapx: float, mapy: float, radius_km: float) -> list[dict]:
+def _search_dummy(mapx: float, mapy: float, radius_m: int) -> list[dict]:
     """카카오 API 실패 시 좌표 기반 더미 작업 공간 목록을 반환한다."""
     workplaces: list[dict] = []
     for name, ptype, dlat, dlon, *amenity_vals in _DUMMY_TEMPLATES:
         place_lat = mapy + dlat
         place_lon = mapx + dlon
-        dist_km = calc_distance_km(mapy, mapx, place_lat, place_lon)
-        if dist_km > radius_km:
+        dist_m = haversine_meters(mapy, mapx, place_lat, place_lon)
+        if dist_m > radius_m:
             continue
         walk_min = calc_walk_minutes(mapy, mapx, place_lat, place_lon)
         workplaces.append(_build_place(

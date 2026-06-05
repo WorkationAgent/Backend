@@ -142,8 +142,9 @@ async def keyword_search(
 ) -> list[KakaoPlace]:
     """키워드 장소 검색 – hobby/vibe 키워드로 보강."""
     headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
-    params: dict = {"query": query, "size": min(size, 15), "sort": "distance"}
-    if latitude is not None and longitude is not None:
+    has_coords = latitude is not None and longitude is not None
+    params: dict = {"query": query, "size": min(size, 15), "sort": "distance" if has_coords else "accuracy"}
+    if has_coords:
         params["x"] = longitude
         params["y"] = latitude
         if radius_meters:
