@@ -19,6 +19,10 @@ OPENAI_EMBEDDING_MODEL: str = os.environ["OPENAI_EMBEDDING_MODEL"]
 KTO_API_KEY: str = os.environ["KTO_API_KEY"]
 KTO_BASE_URL: str = "https://apis.data.go.kr/B551011/KorService2"
 
+# ── VWorld (행정구역 검증) ────────────────────────────────────
+VWORLD_API_KEY: str = os.environ["VWORLD_API_KEY"]
+VWORLD_BASE_URL: str = "https://api.vworld.kr/req/data"
+
 # ── Kakao ─────────────────────────────────────────────────────
 KAKAO_REST_API_KEY: str = os.environ["KAKAO_REST_API_KEY"]
 KAKAO_LOCAL_URL: str = "https://dapi.kakao.com/v2/local"
@@ -60,6 +64,18 @@ RETRY_RADIUS_EXPAND_M: int = 1000                                  # 도보 확�
 RETRY_RADIUS_EXPAND_KM: float = RETRY_RADIUS_EXPAND_M / 1000     # 1.0km
 RETRY_CAR_EXPAND_M: int = 5000                                     # 자동차 확장 (+5km)
 RETRY_CAR_EXPAND_MIN: int = 30                                     # 자동차 확장 30분
+
+# ── 버스정류장 데이터 ─────────────────────────────────────────
+import pathlib as _pathlib
+BUS_STOPS_CSV: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "bus_stops.csv"
+)
+MEDICAL_HOSPITALS_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_hospitals.xlsx"
+)
+MEDICAL_PHARMACIES_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_pharmacies.xlsx"
+)
 
 # ── 재호출 기준 ───────────────────────────────────────────────
 RETRY_CONFIDENCE_THRESHOLD: int = 54    # confidence 54 이하면 재호출

@@ -4,19 +4,19 @@ from pydantic import BaseModel, Field
 
 
 class MapPoint(BaseModel):
-    """지도에 표시될 위치 (숙소/인프라/지역경험)"""
+    """지도에 표시될 위치 (숙소/작업/인프라/지역경험)"""
     name: str
-    category: Literal["stay", "infra", "experience"]
+    category: Literal["stay", "work", "infra", "experience"]
     latitude: float
     longitude: float
     description: Optional[str] = None
 
 
 class EvaluatedItem(BaseModel):
-    """이름, 별점, 짧은 설명 형식의 출력 항목"""
+    """이름, 짧은 설명, 숙소로부터의 이동거리/시간 형식의 출력 항목"""
     name: str
-    rating: Optional[float] = None
     description: Optional[str] = None
+    distance_text: Optional[str] = None   # 숙소 기준 이동거리/시간 ("도보 5분", "차 8분")
 
 
 class RankedAccommodation(BaseModel):
@@ -26,6 +26,9 @@ class RankedAccommodation(BaseModel):
     name: str
     address: Optional[str] = None
     total_score: float
+    matched_conditions: list[str] = Field(
+        default_factory=list, description="이 숙소가 충족하는 사용자 조건 (3개 이내)"
+    )
     work_summary: Optional[str] = None
     living_summary: Optional[str] = None
     local_summary: Optional[str] = None
@@ -34,8 +37,8 @@ class RankedAccommodation(BaseModel):
     local_experiences: list[EvaluatedItem] = Field(default_factory=list)
     map_points: list[MapPoint] = Field(default_factory=list)
     image_url: Optional[str] = None
-    homepage: Optional[str] = None
-    tel: Optional[str] = None
+    accommodation_info: Optional[dict] = None  # homepage, tel, price
+    cons: Optional[str] = None                 # 아쉬운 점
 
 
 class FinalOutput(BaseModel):

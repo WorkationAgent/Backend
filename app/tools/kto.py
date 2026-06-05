@@ -235,6 +235,38 @@ async def _search_accommodation_by_keyword(keyword: str, max_rows: int) -> list[
         return []
 
 
+async def get_accommodation_price(content_id: str) -> str | None:
+    """KTO detailInfo2 API로 숙소 가격을 조회한다. 없으면 None."""
+    if not content_id or content_id.startswith("kakao_"):
+        return None
+    params = {
+        "serviceKey":    KTO_API_KEY,
+        "contentId":     content_id,
+        "contentTypeId": 32,
+        "MobileOS":      "ETC",
+        "MobileApp":     "WorkationPlanner",
+        "_type":         "json",
+    }
+    try:
+        data = await _get(f"{KTO_BASE_URL}/detailInfo2", params)
+        items = data.get("response", {}).get("body", {}).get("items", {})
+        if isinstance(items, str):
+            return None
+        rooms = items.get("item", [])
+        if isinstance(rooms, dict):
+            rooms = [rooms]
+        for room in rooms:
+            off = int(room.get("roomoffseasonminfee1") or 0)
+            peak = int(room.get("roompeakseasonminfee1") or 0)
+            if off > 0 or peak > 0:
+                if off > 0 and peak > 0:
+                    return f"비수기 {off:,}원 / 성수기 {peak:,}원"
+                return f"{max(off, peak):,}원~"
+    except Exception:
+        pass
+    return None
+
+
 def simplify_accommodation(item: dict) -> dict:
     """LLM에 넘길 숙소 정보를 최소화한다."""
     return {
@@ -248,6 +280,56 @@ def simplify_accommodation(item: dict) -> dict:
         "mapx": item.get("mapx") or None,
         "mapy": item.get("mapy") or None,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [지역 대표 사진] 생활권명 → 관광지 firstimage 1장 (프론트 RegionBanner용)
+# ─────────────────────────────────────────────────────────────────────────────
+async def _first_image_by_keyword(keyword: str, content_type_id: int = 12) -> Optional[str]:
+    """searchKeyword2로 키워드 검색 → 이미지(firstimage)가 있는 첫 결과의 URL."""
+    params = {
+        "serviceKey": KTO_API_KEY,
+        "numOfRows": 10,
+        "pageNo": 1,
+        "MobileOS": "ETC",
+        "MobileApp": "WorkationAgent",
+        "_type": "json",
+        "contentTypeId": content_type_id,   # 12 = 관광지
+        "keyword": keyword,
+        "arrange": "O",
+    }
+    try:
+        data = await _get(f"{KTO_BASE_URL}/searchKeyword2", params)
+    except Exception:
+        return None
+    for raw in _items(data):
+        img = raw.get("firstimage") or raw.get("firstimage2")
+        if img:
+            # http 이미지는 https 환경에서 mixed-content로 차단되므로 https로 승격
+            return img.replace("http://", "https://")
+    return None
+
+
+async def search_region_image(region_name: str) -> Optional[str]:
+    """생활권명 → 대표 관광지 사진(firstimage) URL 1장.
+
+    예: "강원도 양양 서림천 생활권" → 시/군('양양') 우선으로 관광지를 검색해
+    이미지가 있는 첫 결과를 반환. 못 찾으면 None(프론트는 그라데이션 폴백).
+    """
+    cleaned = region_name.replace("생활권", "").strip()
+    tokens = [t for t in cleaned.split() if t]
+    if not tokens:
+        return None
+    # 우선순위: 시/군(보통 2번째 토큰) → 구체 지명(3번째) → 도(첫째)
+    ordered: list[str] = []
+    for idx in (1, 2, 0):
+        if idx < len(tokens) and tokens[idx] not in ordered:
+            ordered.append(tokens[idx])
+    for kw in ordered:
+        img = await _first_image_by_keyword(kw)
+        if img:
+            return img
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
