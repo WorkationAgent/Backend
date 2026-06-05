@@ -61,6 +61,18 @@ RETRY_RADIUS_EXPAND_KM: float = RETRY_RADIUS_EXPAND_M / 1000     # 1.0km
 RETRY_CAR_EXPAND_M: int = 5000                                     # 자동차 확장 (+5km)
 RETRY_CAR_EXPAND_MIN: int = 30                                     # 자동차 확장 30분
 
+# ── 버스정류장 데이터 ─────────────────────────────────────────
+import pathlib as _pathlib
+BUS_STOPS_CSV: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "bus_stops.csv"
+)
+MEDICAL_HOSPITALS_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_hospitals.xlsx"
+)
+MEDICAL_PHARMACIES_XLSX: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_pharmacies.xlsx"
+)
+
 # ── 재호출 기준 ───────────────────────────────────────────────
 RETRY_CONFIDENCE_THRESHOLD: int = 54    # confidence 54 이하면 재호출
 RETRY_RESULT_EMPTY: bool = True         # 결과가 0개면 재호출
