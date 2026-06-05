@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -7,10 +8,12 @@ from app.agents.planner_agent import (
     planner_phase2,
 )
 from app.agents.stay_agent import region_search_node
+from app.tools import kto
 from app.api.schemas import (
     PlanRequest, PlanResponse, ParsedConditions, RegionCandidate,
     SelectRegionRequest, RecommendResponse, AccommodationResult,
     CategoryScores, EvaluatedItem, EvaluationSection, MapPoint,
+    AccommodationInfo,
 )
 
 router = APIRouter()
@@ -23,7 +26,7 @@ def _map_point_kind(category: str, source: str | None = None) -> str:
     """백엔드 category/source → 프론트 kind 변환."""
     if category == "stay":
         return "stay"
-    if source in ("work",):
+    if category == "work" or source in ("work",):
         return "work"
     if source in ("living",):
         return "living"
@@ -50,6 +53,47 @@ def _to_region_candidate(raw: dict, index: int) -> RegionCandidate:
     )
 
 
+def _max_search_radius_m(work_eval, living_eval, local_eval) -> float | None:
+    """세 에이전트가 사용한 검색 반경 중 최댓값(m). 없으면 None.
+
+    - local : details.search_radius_used_km (typed, km)
+    - living: details[cat].zone_km(발견 반경) + places[].distance_meters
+    - work  : details의 반경 키가 있으면 방어적으로 포함
+    """
+    radii: list[float] = []
+
+    # local (typed)
+    det = getattr(local_eval, "details", None)
+    km = getattr(det, "search_radius_used_km", 0) or 0
+    if km:
+        radii.append(float(km) * 1000)
+
+    # living (details = LivingDetails.model_dump() dict)
+    ld = getattr(living_eval, "details", None)
+    if isinstance(ld, dict):
+        for cat in ("transport", "grocery", "medical", "services"):
+            c = ld.get(cat) or {}
+            if not isinstance(c, dict):
+                continue
+            zk = c.get("zone_km")
+            if zk:
+                radii.append(float(zk) * 1000)
+            for p in (c.get("places") or []):
+                dm = (p or {}).get("distance_meters")
+                if dm:
+                    radii.append(float(dm))
+
+    # work (details dict — 반경 키가 있을 때만)
+    wd = getattr(work_eval, "details", None)
+    if isinstance(wd, dict):
+        for key in ("search_radius_km", "radius_km", "search_radius_used_km"):
+            v = wd.get(key)
+            if v:
+                radii.append(float(v) * 1000)
+
+    return round(max(radii)) if radii else None
+
+
 def _to_evaluated_items(items: list) -> list[EvaluatedItem]:
     result = []
     for item in (items or []):
@@ -60,7 +104,7 @@ def _to_evaluated_items(items: list) -> list[EvaluatedItem]:
         result.append(EvaluatedItem(
             name=d.get("name", ""),
             sub=d.get("description", d.get("sub", "")),
-            rating=float(d.get("rating", 0) or 0),
+            distance_text=d.get("distance_text") or None,
         ))
     return result
 
@@ -96,40 +140,50 @@ def _to_accommodation_result(ranked: Any, work_eval, living_eval, local_eval,
 
     if work_eval:
         sections["work"] = EvaluationSection(
-            score=float(round(work_eval.score or 0)),
+            score=round(work_eval.score or 0),
             summary=ranked.work_summary or "",
             items=_to_evaluated_items(ranked.work_environment),
         )
 
     if living_eval:
         sections["living"] = EvaluationSection(
-            score=float(round(living_eval.score or 0)),
+            score=round(living_eval.score or 0),
             summary=ranked.living_summary or "",
             items=_to_evaluated_items(ranked.living_elements),
         )
 
     if local_eval:
         sections["local"] = EvaluationSection(
-            score=float(round(local_eval.score or 0)),
+            score=round(local_eval.score or 0),
             summary=ranked.local_summary or "",
             items=_to_evaluated_items(ranked.local_experiences),
         )
 
+    # 숙소 기본정보 — 값이 하나라도 있을 때만 포함 (price는 현재 데이터에 없어 None)
+    homepage = getattr(ranked, "homepage", None)
+    tel = getattr(ranked, "tel", None)
+    acc_info = (
+        AccommodationInfo(phone=tel, homepage=homepage)
+        if (homepage or tel)
+        else None
+    )
+
     return AccommodationResult(
         rank=ranked.rank,
-        overall_score=float(ranked.total_score or 0),
+        overall_score=round(ranked.total_score or 0),
         name=ranked.name,
         address=ranked.address or "",
         center={"lat": lat, "lng": lng},
+        search_radius_m=_max_search_radius_m(work_eval, living_eval, local_eval),
+        matched_conditions=list(getattr(ranked, "matched_conditions", []) or []),
         map_points=map_points,
         category_scores=CategoryScores(
-            work=float(round(work_eval.score or 0)) if work_eval else 0.0,
-            living=float(round(living_eval.score or 0)) if living_eval else 0.0,
-            local=float(round(local_eval.score or 0)) if local_eval else 0.0,
+            work=round(work_eval.score or 0) if work_eval else 0.0,
+            living=round(living_eval.score or 0) if living_eval else 0.0,
+            local=round(local_eval.score or 0) if local_eval else 0.0,
         ),
         sections=sections,
-        accommodation_info=getattr(ranked, "accommodation_info", None),
-        cons=getattr(ranked, "cons", None),
+        accommodation_info=acc_info,
     )
 
 
@@ -153,6 +207,15 @@ async def plan(body: PlanRequest):
         _to_region_candidate(r, i)
         for i, r in enumerate(result["candidate_regions"])
     ]
+
+    # 지역 대표 사진(KTO) 병렬 조회 → photo_url 채움 (실패/없음은 None → 프론트 그라데이션 폴백)
+    photos = await asyncio.gather(
+        *[kto.search_region_image(c.name) for c in candidates],
+        return_exceptions=True,
+    )
+    for c, img in zip(candidates, photos):
+        if isinstance(img, str) and img:
+            c.photo_url = img
 
     return PlanResponse(
         thread_id=thread_id,
@@ -225,5 +288,6 @@ async def select_region(body: SelectRegionRequest):
     return RecommendResponse(
         recommended_region=region_name,
         results_subtitle=f"{region_name}에서 선별된 숙소 {len(candidates)}곳을 종합 점수 순으로 정렬했어요",
+        matched_conditions=final.matched_conditions or [],
         candidates=candidates,
     )
