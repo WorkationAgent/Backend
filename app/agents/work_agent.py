@@ -22,11 +22,11 @@ import json
 
 from app.core.llm import call_llm
 from app.config.settings import (
-    SEARCH_RADIUS_CAR_KM,
-    SEARCH_RADIUS_WALK_KM,
+    SEARCH_RADIUS_CAR_M,
+    SEARCH_RADIUS_WALK_M,
     RETRY_CONFIDENCE_THRESHOLD,
     RETRY_MAX_COUNT,
-    RETRY_RADIUS_EXPAND_KM,
+    RETRY_RADIUS_EXPAND_M,
 )
 from app.core.state import GraphState
 from app.prompts.work_prompts import (
@@ -155,17 +155,17 @@ async def work_agent(state: GraphState) -> dict:
         if longitude is None or latitude is None:
             workplaces: list[dict] = []
         else:
-            workplaces = search_workplaces(longitude, latitude, transport=transport)
+            workplaces = await search_workplaces(longitude, latitude, transport=transport)
 
             retry = 0
             while not workplaces and retry < RETRY_MAX_COUNT:
                 retry += 1
-                base = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
-                expanded_radius = base + RETRY_RADIUS_EXPAND_KM
-                workplaces = search_workplaces(
+                base = SEARCH_RADIUS_CAR_M if by_car else SEARCH_RADIUS_WALK_M
+                expanded_radius = base + RETRY_RADIUS_EXPAND_M
+                workplaces = await search_workplaces(
                     longitude, latitude,
                     transport=transport,
-                    radius_km=expanded_radius,
+                    radius_m=expanded_radius,
                 )
                 warnings.append(f"[{acc_id}] 검색 결과 없어 반경 {expanded_radius}km로 확장 재시도.")
 

@@ -19,6 +19,10 @@ OPENAI_EMBEDDING_MODEL: str = os.environ["OPENAI_EMBEDDING_MODEL"]
 KTO_API_KEY: str = os.environ["KTO_API_KEY"]
 KTO_BASE_URL: str = "https://apis.data.go.kr/B551011/KorService2"
 
+# ── VWorld (행정구역 검증) ────────────────────────────────────
+VWORLD_API_KEY: str = os.environ["VWORLD_API_KEY"]
+VWORLD_BASE_URL: str = "https://api.vworld.kr/req/data"
+
 # ── Kakao ─────────────────────────────────────────────────────
 KAKAO_REST_API_KEY: str = os.environ["KAKAO_REST_API_KEY"]
 KAKAO_LOCAL_URL: str = "https://dapi.kakao.com/v2/local"

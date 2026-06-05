@@ -67,3 +67,5 @@ async def search_region_reviews(parsed_preferences: dict, display: int = 5) -> s
 async def search_accommodation_reviews(accommodation_name: str, display: int = 3) -> str:
     """숙소명으로 블로그 후기 검색. Stay Phase 2 전용."""
     return await search_blog_text(f"{accommodation_name} 후기", display)
+
+
