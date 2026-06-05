@@ -130,13 +130,21 @@ Work · Living · Local 세 Agent의 평가 결과를 종합해 사용자에게 
 |------|------|
 | rank | 1부터 시작하는 순위 정수 |
 | total_score | 0~100 사이 종합 점수 float |
+| matched_conditions | **이 숙소가** 충족하는 사용자 조건(must_have·선호 중) 3개 이내. 숙소마다 다르게, 그 숙소의 평가 근거에 맞춰 작성 |
 | work_summary | Work Agent 평가 1~2문장 요약 |
 | living_summary | Living Agent 평가 1~2문장 요약 |
 | local_summary | Local Agent 평가 1~2문장 요약 |
-| work_environment | 주변 작업 공간 목록 — EvaluatedItem(name, rating 0~5, description) |
-| living_elements | 주변 생활 인프라 목록 — EvaluatedItem(name, rating 0~5, description) |
-| local_experiences | 주변 로컬 경험 목록 — EvaluatedItem(name, rating 0~5, description) |
-| map_points | 숙소(stay) 1개 + 주요 인프라·경험 위치 — MapPoint(name, category, latitude, longitude, description) |
+| work_environment | 주변 작업 공간 목록 — EvaluatedItem(name, description, distance_text) |
+| living_elements | 주변 생활 인프라 목록 — EvaluatedItem(name, description, distance_text) |
+| local_experiences | 주변 로컬 경험 목록 (5개 내외로 풍부하게) — EvaluatedItem(name, description, distance_text) |
+
+- distance_text: 숙소로부터의 이동거리/시간을 사람이 읽는 문구로. 도보권이면 "도보 N분", 차량이면 "차 N분", 애매하면 "약 Nm". 입력 details의 dist_m·distance_meters·nearest_minutes 등 거리 정보를 근거로 작성. 거리 정보가 없으면 생략(빈 값).
+| map_points | 숙소 1개 + 주요 작업·인프라·경험 위치 — MapPoint(name, category, latitude, longitude, description) |
+
+- 각 map_point의 category는 stay·work·infra·experience 중 하나로 지정한다.
+  (stay=숙소 자신 1개, work=작업 공간·코워킹 카페 등 work_environment 장소, infra=생활 인프라 living_elements, experience=지역 경험 local_experiences)
+  주요 작업 장소는 반드시 category="work"로 표시할 것.
+  latitude/longitude는 입력 details에 좌표가 있을 때만 쓰고, 좌표를 모르면 그 장소는 map_points에서 빼라(좌표를 임의로 지어내지 말 것).
 
 ## 순위 결정 원칙
 - must_have_conditions 미충족 항목은 하위 순위
