@@ -19,11 +19,23 @@ PARSE_RAW_USER = """
 [사용자 요청]
 {raw_text}
 
+[지역명 해석 규칙 — 중요]
+사용자가 실제 행정구역이 아닌 지명을 언급한 경우, 그 의미를 해석하여 실제 행정구역으로 변환하세요.
+- 시설명 → 그 시설이 위치한 실제 행정구역
+  예: "절물동" → 절물자연휴양림이 있는 "제주시 봉개동 일대"
+  예: "한담해안" → 제주 애월읍 한담리 일대
+- 관광지명 → 해당 관광지의 실제 소재지 행정구역
+- 도로명 주소 혼동 주의: "절물로", "○○길" 같은 도로명을 동 이름으로 착각하지 말 것
+  예: "절물로"가 들어간 주소 → "제주시 봉개동" (도로가 위치한 행정구역)
+- 지번 주소 혼동 주의: "산 78-1" 같은 번지를 지역명으로 쓰지 말 것
+- 정확한 행정구역명이 아니어도 사용자 의도를 파악해 가장 가까운 실제 지역으로 해석
+- desired_region에는 반드시 실제 존재하는 지명(시·도·군·구·읍·면·동 수준)을 기재
+
 [반환 형식] JSON만 반환
 {{
   "purpose": "워케이션 | 촌캉스 | 휴식형 | 로컬체험형 | null",
   "duration": "3일 | 5일 | 14일 | 한달 등 기간 표현 | null",
-  "desired_region": "희망 지역 (예: 제주, 강원도 바다 근처) | null",
+  "desired_region": "희망 지역 — 실제 행정구역으로 변환 (예: 제주, 강원도 바다 근처) | null",
   "region_style": "바다 | 산 | 시골 | 도시 | 감성동네 등 | null",
   "desired_vibe": "조용한 | 감성 | 활기찬 | 자연친화 등 | null",
   "tourism_hobby": "카페 | 시장 | 산책 | 등산 | 서핑 등 | null",
@@ -36,8 +48,14 @@ PARSE_RAW_USER = """
   "accommodation_style": "독채 | 감성숙소 | 가성비 | 오션뷰 등 | null",
   "companion": "혼자 | 친구 | 연인 | 반려견 | 아이 등 | null",
   "priority": "작업환경 > 생활인프라 > 교통 등 우선순위 | null",
-  "additional_request": "그 외 자유 요청사항 | null"
+  "additional_request": "그 외 자유 요청사항 | null",
+  "excluded_regions": ["제주시", "강남구"]
 }}
+
+[excluded_regions 규칙]
+- "제주시는 싫어", "강원도 제외", "서울 말고" 같은 명시적 지역 거부를 포함한 배열
+- 언급이 없으면 빈 배열 []
+- 반드시 실제 행정구역명으로 표기 (시·도·군·구·읍·면 단위)
 """
 
 INTERPRET_SYSTEM = """
@@ -73,9 +91,9 @@ INTERPRET_USER = """
   "parsed_preferences": {{
     "travel_type": "workation | vacation | local_experience | rest",
     "stay_length_type": "short_stay | mid_stay | long_stay",
-    "preferred_region_keywords": ["제주", "바다 근처"],
-    "preferred_mood_keywords": ["조용한", "자연친화"],
-    "avoid_keywords": ["관광지", "혼잡한"]
+    "preferred_region_keywords": ["사용자가 실제로 언급한 지역 키워드만"],
+    "preferred_mood_keywords": ["사용자가 실제로 말한 분위기 키워드만 — 언급 없으면 []"],
+    "avoid_keywords": ["사용자가 실제로 싫다고 말한 것만 — 언급 없으면 []"]
   }},
   "must_have_conditions": ["반드시 만족해야 하는 조건 (문장 형태)"],
   "avoid_conditions": ["피해야 할 조건 (문장 형태)"],
@@ -88,6 +106,14 @@ INTERPRET_USER = """
     "local": 0.10
   }}
 }}
+
+[parsed_preferences 작성 규칙 — 매우 중요]
+- preferred_region_keywords: 사용자가 직접 언급한 지역명만. "바다 근처"라고만 했으면 ["바다 근처"]만 포함. "제주"를 말한 적 없으면 "제주" 추가 금지.
+- preferred_mood_keywords: 사용자가 직접 말한 단어만. "조용한"이라고 안 했으면 "조용한" 추가 금지.
+- avoid_keywords: 사용자가 싫다/피하고 싶다고 명시한 것만.
+- must_have/avoid/preference_conditions: 이 세 항목만 해석·추론 허용.
+  (예: "카페 작업"을 원한다고 했으면 must_have에 "카페 작업 가능 환경"을 추론해서 넣는 것은 OK)
+- 요약: parsed_preferences는 원문 그대로, conditions는 해석 허용.
 
 작성 기준:
 
@@ -116,6 +142,12 @@ import json
 FINAL_OUTPUT_SYSTEM = """
 당신은 워케이션 숙소 추천 플래너입니다.
 Work · Living · Local 세 Agent의 평가 결과를 종합해 사용자에게 숙소 순위를 제시합니다.
+
+## 데이터 무결성 규칙 — 절대 준수
+
+1. **숙소명 그대로 사용**: accommodation_id, name은 반드시 입력 데이터 값 그대로 사용. 절대 변경·생성 금지.
+2. **장소명 그대로 사용**: work_environment, living_elements, local_experiences의 장소 이름은 입력 데이터에 있는 것만 사용. 없는 장소를 만들지 말 것.
+3. **지명 생성 금지**: recommended_region은 사용자가 선택한 지역명 그대로. 존재하지 않는 동·리 이름 생성 금지.
 
 ## 출력 계약
 

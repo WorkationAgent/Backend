@@ -235,6 +235,38 @@ async def _search_accommodation_by_keyword(keyword: str, max_rows: int) -> list[
         return []
 
 
+async def get_accommodation_price(content_id: str) -> str | None:
+    """KTO detailInfo2 API로 숙소 가격을 조회한다. 없으면 None."""
+    if not content_id or content_id.startswith("kakao_"):
+        return None
+    params = {
+        "serviceKey":    KTO_API_KEY,
+        "contentId":     content_id,
+        "contentTypeId": 32,
+        "MobileOS":      "ETC",
+        "MobileApp":     "WorkationPlanner",
+        "_type":         "json",
+    }
+    try:
+        data = await _get(f"{KTO_BASE_URL}/detailInfo2", params)
+        items = data.get("response", {}).get("body", {}).get("items", {})
+        if isinstance(items, str):
+            return None
+        rooms = items.get("item", [])
+        if isinstance(rooms, dict):
+            rooms = [rooms]
+        for room in rooms:
+            off = int(room.get("roomoffseasonminfee1") or 0)
+            peak = int(room.get("roompeakseasonminfee1") or 0)
+            if off > 0 or peak > 0:
+                if off > 0 and peak > 0:
+                    return f"비수기 {off:,}원 / 성수기 {peak:,}원"
+                return f"{max(off, peak):,}원~"
+    except Exception:
+        pass
+    return None
+
+
 def simplify_accommodation(item: dict) -> dict:
     """LLM에 넘길 숙소 정보를 최소화한다."""
     return {

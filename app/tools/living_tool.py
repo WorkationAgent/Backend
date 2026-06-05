@@ -13,13 +13,21 @@ LivingSearchPlan(Planning LLM 출력)을 받아:
 from __future__ import annotations
 
 import asyncio
+import functools
+from math import cos, radians
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+import numpy as np
+
+import pandas as pd
 from app.tools.geo import haversine_meters as _haversine_geo
 
 import httpx
 
 from app.config.settings import (
+    BUS_STOPS_CSV,
+    MEDICAL_HOSPITALS_XLSX,
+    MEDICAL_PHARMACIES_XLSX,
     KAKAO_LOCAL_URL,
     KAKAO_MOBILITY_URL,
     KAKAO_REST_API_KEY,
@@ -31,7 +39,7 @@ from app.config.settings import (
     SEARCH_RADIUS_WALK_KM,
 )
 
-_CANDIDATES_PER_CATEGORY: int = 5  # Directions API 호출 최소화용
+_CANDIDATES_PER_CATEGORY: int = 15  # 도보 모드에서 Directions API 제거로 비용 없음
 from app.schemas.living_schema import (
     CategoryResult,
     CategorySearchPlan,
@@ -178,6 +186,10 @@ async def _kakao_keyword_search(
 
 # ── Naver Local 검색 ──────────────────────────────────────────────────────────
 
+_NAVER_DISPLAY_MAX = 5    # Naver Local API 단일 호출 최대 반환 건수
+_NAVER_PAGES       = 2    # 페이지 수 (5 × 2 = 최대 10건)
+
+
 async def _naver_search(
     keyword: str,
     lat: float,
@@ -186,27 +198,37 @@ async def _naver_search(
     client: httpx.AsyncClient,
     area_name: str = "",
 ) -> List[PlacePoint]:
-    """haversine으로 1차 필터 후 Directions API로 최종 필터 예정."""
-    query  = f"{area_name} {keyword}".strip() if area_name else keyword
-    params = {"query": query, "display": _CANDIDATES_PER_CATEGORY, "sort": "random"}
+    """Naver Local 검색. display 최대 5건이라 start로 페이지네이션해 최대 15건 수집."""
+    query   = f"{area_name} {keyword}".strip() if area_name else keyword
     headers = {
         "X-Naver-Client-Id":     NAVER_CLIENT_ID,
         "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
     }
-    try:
-        resp = await client.get(NAVER_LOCAL_URL, params=params, headers=headers, timeout=5.0)
-        resp.raise_for_status()
-        items = resp.json().get("items", [])
-    except Exception:
-        return []
+
+    raw_items: list = []
+    for page in range(_NAVER_PAGES):
+        params = {
+            "query":   query,
+            "display": _NAVER_DISPLAY_MAX,
+            "start":   page * _NAVER_DISPLAY_MAX + 1,
+            "sort":    "random",
+        }
+        try:
+            resp = await client.get(NAVER_LOCAL_URL, params=params, headers=headers, timeout=5.0)
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            if not items:
+                break   # 더 이상 결과 없음
+            raw_items.extend(items)
+        except Exception:
+            break
 
     places = []
-    for item in items:
+    for item in raw_items:
         try:
             place_lng = int(item["mapx"]) / 1e7
             place_lat = int(item["mapy"]) / 1e7
             dist = _haversine(lat, lng, place_lat, place_lng)
-            # Directions API 호출 전 haversine으로 명백히 먼 곳 1차 제거 (반경 2배)
             if dist <= radius_m * 2:
                 places.append(PlacePoint(
                     name=_clean_html(item["title"]),
@@ -245,10 +267,32 @@ async def _apply_directions_filter(
     client: httpx.AsyncClient,
 ) -> List[PlacePoint]:
     """
-    후보 장소 각각에 Directions API 호출 후 기준 내 장소만 반환.
-    distance_meters를 실제 도로 거리로 업데이트.
-    nearest_minutes: 도보 → 도로거리÷80, 자차 → 실제 소요 시간
+    후보 장소를 이동 방식 기준으로 필터링.
+
+    도보 모드: Haversine 직선 거리 사용.
+      자동차 길찾기 API는 도보 경로와 달리 도로를 우회해
+      실제 도보 거리보다 과대 측정됨 → 직선 거리가 더 정확한 근사.
+
+    자차 모드: Kakao Mobility Directions API (소요 시간 기준).
+      자동차는 도로를 따라야 하므로 실제 경로 시간이 필요.
+      API가 -1 반환 시 Haversine fallback.
     """
+    # 도보: Directions API 없이 Haversine 직접 필터
+    if transport_mode != "car":
+        filtered = []
+        for place in candidates:
+            dist = int(_haversine(origin_lat, origin_lng, place.latitude, place.longitude))
+            if dist <= threshold:
+                filtered.append(PlacePoint(
+                    name=place.name,
+                    latitude=place.latitude,
+                    longitude=place.longitude,
+                    distance_meters=dist,
+                ))
+        filtered.sort(key=lambda p: p.distance_meters)
+        return filtered
+
+    # 자차: Directions API 소요 시간 기준
     tasks = [
         _road_info(origin_lat, origin_lng, p.latitude, p.longitude, client)
         for p in candidates
@@ -258,23 +302,17 @@ async def _apply_directions_filter(
     filtered = []
     for place, (road_dist, duration) in zip(candidates, road_results):
         if road_dist == -1:
-            continue
-        if transport_mode == "car":
-            if duration <= threshold:
-                filtered.append(PlacePoint(
-                    name=place.name,
-                    latitude=place.latitude,
-                    longitude=place.longitude,
-                    distance_meters=road_dist,
-                ))
-        else:  # walk
-            if road_dist <= threshold:
-                filtered.append(PlacePoint(
-                    name=place.name,
-                    latitude=place.latitude,
-                    longitude=place.longitude,
-                    distance_meters=road_dist,
-                ))
+            # 경로 없음 → Haversine fallback (소형 시설 등)
+            road_dist = int(_haversine(origin_lat, origin_lng, place.latitude, place.longitude))
+            duration  = -1
+
+        if duration != -1 and duration <= threshold:
+            filtered.append(PlacePoint(
+                name=place.name,
+                latitude=place.latitude,
+                longitude=place.longitude,
+                distance_meters=road_dist,
+            ))
 
     filtered.sort(key=lambda p: p.distance_meters)
     return filtered
@@ -286,15 +324,13 @@ async def _search_category(
     cat_plan: CategorySearchPlan,
     origin_lat: float,
     origin_lng: float,
-    radius_km: float,
+    radius_m: int,
     transport_mode: str,
     threshold: int,
     client: httpx.AsyncClient,
     area_name: str = "",
 ) -> CategoryResult:
     """후보 수집 → Directions 필터 → CategoryResult 반환."""
-    radius_m = int(radius_km * 1000)
-
     code_tasks  = [_kakao_category_search(code, origin_lat, origin_lng, radius_m, client) for code in cat_plan.kakao_codes]
     kw_tasks    = [_kakao_keyword_search(kw,   origin_lat, origin_lng, radius_m, client) for kw   in cat_plan.kakao_keywords]
     naver_tasks = [_naver_search(kw, origin_lat, origin_lng, radius_m, client, area_name) for kw in cat_plan.naver_keywords]
@@ -328,7 +364,7 @@ async def _search_category(
 
     return CategoryResult(
         found=True,
-        zone_km=radius_km,
+        zone_km=radius_m / 1000,
         count=len(filtered),
         nearest_minutes=nearest_min,
         places=filtered[:10],
@@ -373,16 +409,19 @@ async def search_living_infra(
     weights: Dict[str, float] = {name: getattr(plan, name).weight for name in cat_plans}
     category_results: Dict[str, CategoryResult] = {}
 
+    primary_radius_m = int(plan.primary_radius_km * 1000)
+    retry_radius_m   = int(plan.retry_radius_km   * 1000)
+
     async with httpx.AsyncClient() as client:
         for cat_name, cat_plan in cat_plans.items():
             result = await _search_category(
                 cat_plan, lat, lng,
-                plan.primary_radius_km, transport_mode, primary_threshold, client, area_name,
+                primary_radius_m, transport_mode, primary_threshold, client, area_name,
             )
             if not result.found:
                 result = await _search_category(
                     cat_plan, lat, lng,
-                    plan.retry_radius_km, transport_mode, retry_threshold, client, area_name,
+                    retry_radius_m, transport_mode, retry_threshold, client, area_name,
                 )
             category_results[cat_name] = result
 
@@ -421,7 +460,7 @@ async def search_categories(
         primary_threshold = _WALK_PRIMARY_M
         retry_threshold   = _WALK_RETRY_M
 
-    radius_km = plan.retry_radius_km if use_retry_radius else plan.primary_radius_km
+    radius_m  = int((plan.retry_radius_km if use_retry_radius else plan.primary_radius_km) * 1000)
     threshold = retry_threshold if use_retry_radius else primary_threshold
 
     cat_plans: Dict[str, CategorySearchPlan] = {
@@ -437,7 +476,7 @@ async def search_categories(
             if cat_name not in cat_plans:
                 continue
             result = await _search_category(
-                cat_plans[cat_name], lat, lng, radius_km, transport_mode, threshold, client, area_name,
+                cat_plans[cat_name], lat, lng, radius_m, transport_mode, threshold, client, area_name,
             )
             results[cat_name] = result
 
@@ -549,3 +588,181 @@ async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
             return float(doc["y"]), float(doc["x"])
         except Exception:
             return None
+
+
+_WALK_MAX_THRESHOLD_M = 5000  # 도보 threshold 상한 (약 60분)
+
+
+async def search_one_category(
+    lat: float,
+    lng: float,
+    kakao_codes: List[str],
+    keywords: List[str],
+    radius_m: int,
+    transport_mode: Literal["walk", "car"] = "walk",
+    area_name: str = "",
+    naver_keywords: List[str] = [],
+) -> CategoryResult:
+    """ReAct Agent용 단일 카테고리 탐색.
+
+    threshold:
+      도보 — LLM이 요청한 radius_m을 그대로 사용 (상한 5000m).
+             LLM이 radius_m을 늘리면 필터 기준도 함께 넓어진다.
+      자차 — 시간 기준(_CAR_PRIMARY_SEC) 고정 (거리↔시간 환산 불명확).
+
+    Directions API가 -1을 반환하면 Haversine 직선 거리로 fallback.
+    """
+    cat_plan = CategorySearchPlan(
+        kakao_codes=kakao_codes,
+        kakao_keywords=keywords,
+        naver_keywords=naver_keywords,
+        weight=1.0,
+        priority="essential",
+    )
+    threshold = min(radius_m, _WALK_MAX_THRESHOLD_M) if transport_mode == "walk" else _CAR_PRIMARY_SEC
+    async with httpx.AsyncClient() as client:
+        return await _search_category(
+            cat_plan, lat, lng, radius_m, transport_mode, threshold, client, area_name,
+        )
+
+
+# ── 공통 numpy 반경 검색 ─────────────────────────────────────────────────────
+
+def _search_near(
+    df: pd.DataFrame,
+    lat: float,
+    lng: float,
+    radius_m: int,
+    name_col: str,
+    max_results: int,
+) -> List[PlacePoint]:
+    """bbox 선필터 → numpy vectorized Haversine → 거리 순 반환.
+
+    1. 위경도 ±δ 사각형으로 후보를 수백 건으로 축소 (O(n) 비교 → 빠름)
+    2. 남은 후보에만 정확한 Haversine 적용 (numpy 배열 연산)
+    3. radius_m 이하만 거리 순 정렬
+    """
+    if df.empty:
+        return []
+
+    # ── 1. bbox 선필터 ────────────────────────────────────────────────────────
+    dlat = radius_m / 111_111                         # 위도 1° ≈ 111.1km
+    dlng = radius_m / (111_111 * cos(radians(lat)))   # 경도 1° ≈ 111.1km × cos(lat)
+
+    box = df[
+        (df["위도"] >= lat - dlat) & (df["위도"] <= lat + dlat) &
+        (df["경도"] >= lng - dlng) & (df["경도"] <= lng + dlng)
+    ]
+    if box.empty:
+        return []
+
+    # ── 2. vectorized Haversine ────────────────────────────────────────────────
+    lat_r  = radians(lat)
+    lats   = np.radians(box["위도"].to_numpy())
+    lngs   = np.radians(box["경도"].to_numpy())
+    dlat_a = lats - lat_r
+    dlng_a = lngs - radians(lng)
+
+    a    = np.sin(dlat_a / 2) ** 2 + cos(lat_r) * np.cos(lats) * np.sin(dlng_a / 2) ** 2
+    dist = (2 * 6_371_000 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))).astype(int)
+
+    # ── 3. 반경 필터 + 정렬 ────────────────────────────────────────────────────
+    mask  = dist <= radius_m
+    names = box[name_col].to_numpy()[mask]
+    lats_ = box["위도"].to_numpy()[mask]
+    lngs_ = box["경도"].to_numpy()[mask]
+    dists = dist[mask]
+
+    order = np.argsort(dists)[:max_results]
+    return [
+        PlacePoint(
+            name=str(names[i]),
+            latitude=float(lats_[i]),
+            longitude=float(lngs_[i]),
+            distance_meters=int(dists[i]),
+        )
+        for i in order
+    ]
+
+
+# ── 버스정류장 CSV 검색 ───────────────────────────────────────────────────────
+
+@functools.lru_cache(maxsize=1)
+def _load_bus_stops() -> pd.DataFrame:
+    """CSV를 앱 최초 호출 시 한 번만 로딩 후 메모리 캐싱."""
+    try:
+        df = pd.read_csv(BUS_STOPS_CSV, encoding="utf-8-sig", dtype=str)
+        df["위도"] = pd.to_numeric(df["위도"], errors="coerce")
+        df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
+        df = df.dropna(subset=["위도", "경도"])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["정류장번호", "정류장명", "위도", "경도", "도시명"])
+
+
+def search_bus_stops_near(
+    lat: float,
+    lng: float,
+    radius_m: int,
+    city_name: str = "",
+) -> List[PlacePoint]:
+    """CSV에서 반경 내 버스정류장 반환 (numpy 벡터화)."""
+    df = _load_bus_stops()
+    if df.empty:
+        return []
+
+    if city_name:
+        filtered = df[df["도시명"].str.contains(city_name, na=False)]
+        if filtered.empty:
+            filtered = df
+    else:
+        filtered = df
+
+    return _search_near(filtered, lat, lng, radius_m, name_col="정류장명", max_results=10)
+
+
+# ── 의료기관 XLSX 검색 ────────────────────────────────────────────────────────
+
+@functools.lru_cache(maxsize=1)
+def _load_medical() -> pd.DataFrame:
+    """병원 + 약국 XLSX를 최초 호출 시 한 번만 로딩 후 메모리 캐싱."""
+    dfs = []
+    for path in [MEDICAL_HOSPITALS_XLSX, MEDICAL_PHARMACIES_XLSX]:
+        try:
+            df = pd.read_excel(path, dtype=str)
+            df = df[["요양기관명", "시도코드명", "시군구코드명", "주소", "좌표(X)", "좌표(Y)"]].copy()
+            df.rename(columns={"좌표(X)": "경도", "좌표(Y)": "위도"}, inplace=True)
+            df["위도"] = pd.to_numeric(df["위도"], errors="coerce")
+            df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
+            df = df.dropna(subset=["위도", "경도"])
+            dfs.append(df)
+        except Exception:
+            pass
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(
+        columns=["요양기관명", "시도코드명", "시군구코드명", "주소", "위도", "경도"]
+    )
+
+
+def search_medical_near(
+    lat: float,
+    lng: float,
+    radius_m: int,
+    sido: str = "",
+) -> List[PlacePoint]:
+    """XLSX에서 반경 내 의료기관(병원+약국) 반환.
+
+    sido(시도코드명)로 선필터 후 Haversine 계산.
+    예: sido="제주" → 제주특별자치도만 검색.
+    """
+    df = _load_medical()
+    if df.empty:
+        return []
+
+    if sido:
+        filtered = df[df["시도코드명"].str.contains(sido, na=False)]
+        if filtered.empty:
+            filtered = df
+    else:
+        filtered = df
+
+    return _search_near(filtered, lat, lng, radius_m, name_col="요양기관명", max_results=15)

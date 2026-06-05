@@ -190,10 +190,11 @@ def _to_accommodation_result(ranked: Any, work_eval, living_eval, local_eval,
 @router.post("/plan", response_model=PlanResponse)
 async def plan(body: PlanRequest):
     """줄글 입력 → 생활권 후보 3개 반환."""
-    user_input = await parse_raw_input(body.text)
+    user_input, excluded_regions = await parse_raw_input(body.text)
     interpreted = await interpret_user_input(user_input)
 
-    state = {**interpreted, "user_input": user_input, "retry_count": {}, "errors": []}
+    state = {**interpreted, "user_input": user_input,
+             "excluded_regions": excluded_regions, "retry_count": {}, "errors": []}
     result = await region_search_node(state)
 
     thread_id = str(uuid.uuid4())
@@ -249,7 +250,10 @@ async def select_region(body: SelectRegionRequest):
     final = result.get("final_user_output")
     if not final:
         errors = result.get("errors", [])
-        raise HTTPException(status_code=500, detail=f"최종 추천 생성 실패: {errors}")
+        no_acc = any("숙소" in e for e in errors)
+        detail = "해당 지역에서 숙소를 찾지 못했습니다. 다른 지역을 선택해주세요." if no_acc \
+                 else "추천 결과를 생성하지 못했습니다. 다시 시도해주세요."
+        raise HTTPException(status_code=404, detail=detail)
 
     work_evals   = result.get("work_evaluations", [])
     living_evals = result.get("living_evaluations", [])
@@ -259,8 +263,8 @@ async def select_region(body: SelectRegionRequest):
     living_map = {str(e.accommodation_id): e for e in living_evals}
     local_map  = {str(e.accommodation_id): e for e in local_evals}
 
-    # 좌표 맵 — normalized_accommodations에서 추출
-    normalized = result.get("normalized_accommodations", [])
+    # 좌표 맵 — candidate_accommodations(normalized)에서 추출
+    normalized = result.get("candidate_accommodations", [])
     coord_map  = {str(a.get("id", "")): a for a in normalized}
 
     def _find(m, acc_id, rank, evals):
