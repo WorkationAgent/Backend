@@ -100,10 +100,9 @@ INTERPRET_USER = """
   "preference_conditions": ["있으면 좋은 조건 (문장 형태)"],
   "priority_weights": {{
     "work": 0.30,
-    "living": 0.25,
-    "transport": 0.20,
-    "accommodation": 0.15,
-    "local": 0.10
+    "living": 0.30,
+    "accommodation": 0.25,
+    "local": 0.15
   }}
 }}
 
@@ -118,14 +117,15 @@ INTERPRET_USER = """
 작성 기준:
 
 [must_have — 핵심 원칙]
-- "지역이 바다 근처여야 한다" 같은 지역 희망은 must_have가 아님 → parsed_preferences에 넣을 것
-- must_have는 숙소·서비스 조건만: "반려견 동반 가능 숙소", "카페 작업 가능 환경", "대중교통 도보 15분 이내"
+- must_have 기준: 사용자가 명시적으로 요구하거나("꼭", "필수", "없으면 안 돼"), 없으면 선택 자체가 불가능한 조건
+- 카테고리 제한 없음 — 숙소, 예산, 시설, 지역 특성, 액티비티, 교통 등 모든 조건 포함 가능
 - 동행이 반려동물이면 반드시: "반려견/반려동물 입실 가능 숙소"를 must_have에 포함
-- 작업 필요하면: "Wi-Fi·콘센트 완비된 카페 또는 작업 공간"을 must_have에 포함
-- must_have는 3개 이내로 핵심만 (많으면 재호출이 잦아짐)
+- 작업 필요하면: "Wi-Fi·콘센트 완비된 작업 가능 환경"을 must_have에 포함
+- "있으면 좋겠다", "가능하면" 등 강도가 약한 희망사항은 must_have가 아닌 preference_conditions에 넣을 것
 
 [priority_weights — 반드시 지킬 규칙]
-- 5개 합이 정확히 1.0
+- 4개 합이 정확히 1.0 (transport는 별도 항목 없음 — living에 포함)
+- living은 생활 인프라 + 교통 접근성을 함께 반영; 이동 방식(뚜벅이/자차)이 핵심 조건이면 living 가중치를 높게 설정
 - work_required=false 또는 "일 안 할거야" → work: 0.00
 - work_required=true 또는 워케이션 → work: 0.25~0.35
 - "관광 안 할거야", "그냥 쉬러가요" 명시적 거부 → local: 0.00

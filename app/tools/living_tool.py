@@ -487,7 +487,7 @@ _SCAN_CODES: Dict[str, List[str]] = {
     "transport": ["SW8", "BS8"],
     "grocery":   ["MT1", "CS2"],
     "medical":   ["HP8", "PM9"],
-    "services":  ["BK9", "PO3"],
+    "services":  ["BK9"],
 }
 
 

@@ -53,7 +53,7 @@ async def parse_raw_input(raw_text: str) -> tuple[UserInput, list[str]]:
 
 
 async def interpret_user_input(user_input: UserInput) -> dict:
-    """UserInput → 5개 조건 해석 (parsed_preferences, must/avoid/preference_conditions, priority_weights)."""
+    """UserInput → 조건 해석 (parsed_preferences, must/avoid/preference_conditions, priority_weights)."""
     text = await call_llm(
         messages=[{"role": "user", "content": INTERPRET_USER.format(
             purpose=user_input.purpose or "미입력",
@@ -78,19 +78,12 @@ async def interpret_user_input(user_input: UserInput) -> dict:
     )
     result = json.loads(text)
     weights = result.get("priority_weights", {})
+    weights.pop("transport", None)  # transport는 living 내부 평가로 처리
 
     # ── 명시적 신호 보정 ────────────────────────────────────────
     # Work
-    if user_input.work_required is False or user_input.work_required is None:
+    if user_input.work_required is False:
         weights["work"] = 0.0
-
-    # Local — tourism_hobby 없고 휴식형이면 0
-    if not user_input.tourism_hobby:
-        purpose = (user_input.purpose or "").lower()
-        if any(kw in purpose for kw in ["휴식", "쉬", "촌캉스", "rest", "vacation"]):
-            weights["local"] = 0.0
-        else:
-            weights["local"] = min(weights.get("local", 0.1), 0.05)
 
     # Living — 단기(5일 이하)면 낮추기
     duration = (user_input.duration or "").lower()
@@ -202,10 +195,9 @@ async def planner_phase2(state: GraphState) -> dict:
     warnings: list = list(state.get("warnings") or [])
     retry_count   = dict(state.get("retry_count") or {})
 
-    user_input = state.get("user_input")
     priority_weights = state.get("priority_weights", {})
 
-    run_work   = getattr(user_input, "work_required", None) is True
+    run_work   = priority_weights.get("work", 0) > 0.05
     run_living = priority_weights.get("living", 0.25) > 0.05
     run_local  = priority_weights.get("local", 0.10) > 0.05
 

@@ -167,11 +167,11 @@ async def _process_one_accommodation(
     # 결과 0개 또는 신뢰도 ≤ 54 → 반경 확장 1회 재시도 (도보 2배, 자차 1.5배)
     needs_retry = (not workplaces) or (confidence <= RETRY_CONFIDENCE_THRESHOLD)
     if needs_retry and longitude is not None and latitude is not None:
-        expanded = SEARCH_RADIUS_CAR_KM * 1.5 if by_car else SEARCH_RADIUS_WALK_KM * 2.0
+        expanded = int(SEARCH_RADIUS_CAR_M * 1.5) if by_car else int(SEARCH_RADIUS_WALK_M * 2.0)
         retry_workplaces = await search_workplaces(
             longitude, latitude,
             transport=transport_str,
-            radius_km=expanded,
+            radius_m=expanded,
             keywords=search_keywords,
         )
         if retry_workplaces:
@@ -183,14 +183,11 @@ async def _process_one_accommodation(
             workplaces = retry_workplaces
         retried = True
         acc_warnings.append(
-            f"[{acc_id}] 반경 {expanded:.1f}km 확장 재시도 (결과부족 또는 신뢰도 {confidence:.0f})."
+            f"[{acc_id}] 반경 {expanded}m 확장 재시도 (결과부족 또는 신뢰도 {confidence:.0f})."
         )
 
-    # FAIL이면 score 강제 0
     final_status = eval_result.get("status", "FAIL")
     total_score = eval_result.get("total_score", 0.0)
-    if final_status == "FAIL":
-        total_score = 0.0
 
     # PASS/CONDITIONAL_PASS일 때만 장소 노출 (FAIL이면 엉뚱한 장소 노출 방지)
     if final_status in ("PASS", "CONDITIONAL_PASS"):

@@ -78,7 +78,7 @@ budget_score (5점):
 [status 판정]
 - PASS: must_have 조건 전부 충족
 - CONDITIONAL_PASS: must_have 완전 충족은 아니지만 대안 공간이 존재해 업무 가능
-- FAIL: must_have 미충족이거나 주변에 작업 공간 자체가 없음 (total_score=0)
+- FAIL: must_have 미충족이거나 주변에 작업 공간 자체가 없음 (점수는 실제 작업공간 품질 기반으로 계산)
 
 [grade 기준]
 - 85점 이상: A / 70점 이상: B / 55점 이상: C / 40점 이상: D / 40점 미만: F
