@@ -27,4 +27,5 @@ class WorkEvaluation(BaseModel):
     confidence: Optional[float] = None
     summary: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
+    map_points: list[Dict[str, Any]] = Field(default_factory=list)   # [{name, lat, lng, type}]
     map_points: list[dict] = Field(default_factory=list)

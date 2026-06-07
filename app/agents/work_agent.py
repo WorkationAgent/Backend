@@ -207,6 +207,12 @@ async def _process_one_accommodation(
     details = eval_result.get("details", {})
     details["status"] = final_status
     details["places"] = places_for_list
+    # 실제 사용한 검색 반경(km) 기록 — 재시도 시 확장값, 아니면 기본값
+    _base_km = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
+    details["search_radius_km"] = round(
+        (SEARCH_RADIUS_CAR_KM * 1.5 if by_car else SEARCH_RADIUS_WALK_KM * 2.0) if retried else _base_km,
+        1,
+    )
 
     evaluation = WorkEvaluation(
         accommodation_id=acc_id,

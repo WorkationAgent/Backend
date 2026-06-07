@@ -168,7 +168,7 @@ Work · Living · Local 세 Agent의 평가 결과를 종합해 사용자에게 
 | local_summary | Local Agent 평가 1~2문장 요약 |
 | work_environment | 주변 작업 공간 목록 — EvaluatedItem(name, description, distance_text) |
 | living_elements | 주변 생활 인프라 목록 — EvaluatedItem(name, description, distance_text) |
-| local_experiences | 주변 로컬 경험 목록 (5개 내외로 풍부하게) — EvaluatedItem(name, description, distance_text) |
+| local_experiences | 주변 로컬 경험 목록 (5개 내외로 풍부하게) — EvaluatedItem(name, description, distance_text). **local_eval.details의 matched_hobbies·daily_spots 중 사용자 취미와 직접 매칭되는 장소(예: 서핑 강습소·서핑샵)는 반드시 1개 이상 포함할 것** |
 
 - distance_text: 숙소로부터의 이동거리/시간을 사람이 읽는 문구로. 도보권이면 "도보 N분", 차량이면 "차 N분", 애매하면 "약 Nm". 입력 details의 dist_m·distance_meters·nearest_minutes 등 거리 정보를 근거로 작성. 거리 정보가 없으면 생략(빈 값).
 | map_points | 숙소 1개 + 주요 작업·인프라·경험 위치 — MapPoint(name, category, latitude, longitude, description) |

@@ -201,6 +201,15 @@ async def planner_phase2(state: GraphState) -> dict:
     run_living = priority_weights.get("living", 0.25) > 0.05
     run_local  = priority_weights.get("local", 0.10) > 0.05
 
+    # 실행하지 않은 에이전트의 사유 (프론트 섹션에 안내 문구로 표시)
+    skipped_agents: dict[str, str] = {}
+    if not run_work:
+        skipped_agents["work"] = "워케이션(원격근무) 요청이 아니어서 작업 환경은 평가하지 않았어요."
+    if not run_living:
+        skipped_agents["living"] = "생활 인프라 우선순위가 낮아 평가하지 않았어요."
+    if not run_local:
+        skipped_agents["local"] = "관광·로컬 경험 우선순위가 낮아 평가하지 않았어요."
+
     worker_state = state  # 이미 normalized로 업데이트된 state 사용
 
     coros = []
@@ -239,7 +248,8 @@ async def planner_phase2(state: GraphState) -> dict:
     except Exception as e:
         errors.append(f"planner: build_final_output 실패 — {e}")
 
-    return {**merged, "errors": errors, "warnings": warnings, "retry_count": retry_count}
+    return {**merged, "errors": errors, "warnings": warnings,
+            "retry_count": retry_count, "skipped_agents": skipped_agents}
 
 
 # ── 최종 출력 생성 ────────────────────────────────────────────────────────────
@@ -368,6 +378,7 @@ async def build_final_output(
         messages=[{"role": "user", "content": user_msg}],
         system=FINAL_OUTPUT_SYSTEM,
         output_schema=FinalOutput,
+        max_tokens=8192,   # 숙소 3개 × 풍부한 항목 → 4096이면 JSON이 잘려 파싱 실패
     )
 
     # LLM이 total_score를 임의로 생성하지 못하도록 코드 계산값으로 강제 덮어씌우기

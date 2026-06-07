@@ -35,19 +35,15 @@ async def local_agent(state: dict) -> dict:
     accommodations: list[dict] = state.get("candidate_accommodations", [])
     user_input: UserInput = state["user_input"]
     stay_dates = state.get("parsed_preferences", {}).get("stay_dates")
-    must_have_conditions: list[str] = state.get("must_have_conditions", [])
 
-    # must_have를 user_input에 additional_request로 주입 (Local Agent가 활용)
-    if must_have_conditions and not user_input.additional_request:
-        from dataclasses import replace
-        try:
-            user_input = user_input.model_copy(
-                update={"additional_request": " | ".join(must_have_conditions)}
-            )
-        except Exception:
-            pass
+    # 해석된 조건을 평가에 직접 전달
+    conditions = {
+        "must_have":   state.get("must_have_conditions") or [],
+        "avoid":       state.get("avoid_conditions") or [],
+        "preference":  state.get("preference_conditions") or [],
+    }
 
-    evaluations = await evaluate_accommodations(accommodations, user_input, stay_dates)
+    evaluations = await evaluate_accommodations(accommodations, user_input, stay_dates, conditions)
     return {"local_evaluations": list(evaluations), "warnings": []}
 
 
@@ -55,10 +51,11 @@ async def evaluate_accommodations(
     accommodations: list[dict],
     user_input: UserInput,
     stay_dates: Optional[tuple[str, str]] = None,
+    conditions: Optional[dict] = None,
 ) -> list[LocalEvaluation]:
-    """숙소 목록 병렬 평가 (직접 호출용)."""
+    """숙소 목록 병렬 평가 (직접 호출용). conditions: 해석된 must_have/avoid/preference."""
     tasks = [
-        _evaluate_one(acc, user_input, stay_dates)
+        _evaluate_one(acc, user_input, stay_dates, conditions)
         for acc in accommodations
     ]
     return await asyncio.gather(*tasks)
@@ -71,8 +68,10 @@ async def _evaluate_one(
     accommodation: dict,
     user_input: UserInput,
     stay_dates: Optional[tuple[str, str]],
+    conditions: Optional[dict] = None,
     retry: int = 0,
 ) -> LocalEvaluation:
+    conditions = conditions or {}
     radius_m = _initial_radius_m(user_input, retry)
 
     # 1) 병렬 베이스라인 수집 (LLM 없음)
@@ -91,7 +90,7 @@ async def _evaluate_one(
         + len(festivals)
     )
     if total == 0 and retry < RETRY_MAX_COUNT:
-        return await _evaluate_one(accommodation, user_input, stay_dates, retry + 1)
+        return await _evaluate_one(accommodation, user_input, stay_dates, conditions, retry + 1)
 
     # 1.5) 자율 보강 — hobby/vibe 특화 장소를 LLM이 0~3번 자율 검색 (미니 ReAct)
     augmented_places = await _autonomous_augment(accommodation, user_input, radius_m)
@@ -108,6 +107,9 @@ async def _evaluate_one(
         blog_snippets=[b.model_dump() for b in blog_snippets],
         regional_context=[c.model_dump() for c in regional_context],
         search_radius_used_km=radius_m / 1000,
+        must_have_conditions=conditions.get("must_have"),
+        avoid_conditions=conditions.get("avoid"),
+        preference_conditions=conditions.get("preference"),
     )
 
     evaluation: LocalEvaluation = await call_llm(
@@ -118,14 +120,46 @@ async def _evaluate_one(
     )
     evaluation.accommodation_id = accommodation["id"]
 
+    # 2.5) LLM이 고른 spot에 원본 장소의 실제 좌표를 이름 매칭으로 채움 (지도 핀용)
+    _fill_spot_coords(
+        evaluation, signature_places, daily_places, augmented_places
+    )
+
     # 3) confidence 부족 → 반경 확장 재호출
     if (
         evaluation.confidence <= RETRY_CONFIDENCE_THRESHOLD
         and retry < RETRY_MAX_COUNT
     ):
-        return await _evaluate_one(accommodation, user_input, stay_dates, retry + 1)
+        return await _evaluate_one(accommodation, user_input, stay_dates, conditions, retry + 1)
 
     return evaluation
+
+
+def _fill_spot_coords(evaluation, signature_places, daily_places, augmented_places) -> None:
+    """LLM이 고른 signature_spots/daily_spots(PlaceItem)에 원본 장소 좌표를 이름 매칭으로 채운다.
+    원본(KTOItem.title / KakaoPlace.name)에 lat/lng가 있으므로 이름으로 되짚어 채운다."""
+    coord_map: dict[str, tuple[float, float]] = {}
+
+    def _add(p) -> None:
+        name = getattr(p, "title", None) or getattr(p, "name", None)
+        lat = getattr(p, "latitude", None)
+        lng = getattr(p, "longitude", None)
+        if name and lat is not None and lng is not None:
+            coord_map[name] = (lat, lng)
+
+    for p in (signature_places or []):
+        _add(p)
+    for lst in (daily_places or {}).values():
+        for p in (lst or []):
+            _add(p)
+    for p in (augmented_places or []):
+        _add(p)
+
+    spots = list(evaluation.details.signature_spots) + list(evaluation.details.daily_spots)
+    for s in spots:
+        c = coord_map.get(s.name)
+        if c:
+            s.latitude, s.longitude = c
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,7 +176,7 @@ async def _autonomous_augment(
     일반 카테고리(카페/음식점/관광지)로 잡히지 않는 것(예: 도예 공방, 비건 식당).
     hobby/vibe 신호가 없으면 검색 없이 빈 리스트 반환(베이스라인만으로 평가).
     """
-    hints = [user_input.tourism_hobby, user_input.desired_vibe]
+    hints = [user_input.tourism_hobby, user_input.desired_vibe, user_input.additional_request]
     if not any(h and h.strip() for h in hints):
         return []
 
@@ -186,19 +220,25 @@ async def _autonomous_augment(
         "일반 카테고리로 잡히는 것만 검색하고, 충분하면 즉시 멈추세요. 불필요하면 검색하지 마세요."
     )
     prompt = (
-        f"사용자 취향: hobby={user_input.tourism_hobby}, vibe={user_input.desired_vibe}\n"
+        f"사용자 취향: hobby={user_input.tourism_hobby}, vibe={user_input.desired_vibe}, "
+        f"추가요청={user_input.additional_request}\n"
         f"지역: {region}\n"
-        f"이 취향에 특화된 장소를 최대 {max_searches}번까지 검색하세요. "
-        f"일반 관광지/카페로 충분히 커버되면 검색하지 마세요."
+        f"이 취향에 특화된 장소, 특히 '서핑 강습'·'공방'·'클래스'처럼 **배우거나 체험하는 곳**을 "
+        f"최대 {max_searches}번까지 검색하세요. (예: 취미가 '서핑'이면 '서핑 강습', '서핑샵'을 검색)\n"
+        f"일반 관광지/카페로는 커버되지 않는 것만 검색하세요."
     )
 
-    collected = await call_llm_with_tools(
-        messages=[{"role": "user", "content": prompt}],
-        tools=tools,
-        tool_executor=_executor,
-        system=system,
-        max_rounds=max_searches,
-    )
+    try:
+        collected = await call_llm_with_tools(
+            messages=[{"role": "user", "content": prompt}],
+            tools=tools,
+            tool_executor=_executor,
+            system=system,
+            max_rounds=max_searches,
+        )
+    except Exception:
+        # 보강 검색 실패는 치명적이지 않음 — 베이스라인만으로 평가 계속
+        return []
 
     # flatten + place_id 기준 중복 제거
     seen, flat = set(), []
