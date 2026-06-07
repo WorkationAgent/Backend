@@ -381,7 +381,7 @@ async def living_agent(state: GraphState) -> GraphState:
         parsed_preferences = {**parsed_preferences, "must_have_conditions": must_have_conditions}
 
     if not candidates:
-        return {**state, "living_evaluations": [], "errors": errors}
+        return {"living_evaluations": []}
 
     transport_mode = _transport_mode(parsed_preferences)
 
@@ -479,9 +479,10 @@ async def living_agent(state: GraphState) -> GraphState:
             evaluations = [retry_map.get(e.accommodation_id, e) for e in evaluations]
             retry_count["living"] = retry_count.get("living", 0) + 1
 
-    return {
-        **state,
-        "living_evaluations": evaluations,
-        "retry_count": retry_count,
-        "errors": errors,
-    }
+    # 그래프 채널 델타만 반환 (retry_count는 병합 리듀서가 처리).
+    # {**state} 전체 반환은 리듀서 채널을 재투입해 중복 적용되므로 금지.
+    # living은 새 error를 만들지 않으므로 errors는 반환하지 않는다(중복 append 방지).
+    out: Dict[str, Any] = {"living_evaluations": evaluations}
+    if retry_count:
+        out["retry_count"] = retry_count
+    return out

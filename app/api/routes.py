@@ -2,12 +2,9 @@ import asyncio
 import uuid
 from typing import Any
 from fastapi import APIRouter, HTTPException
+from langgraph.types import Command
 
-from app.agents.planner_agent import (
-    parse_raw_input, interpret_user_input,
-    planner_phase2,
-)
-from app.agents.stay_agent import region_search_node
+from app.graph.workflow import graph
 from app.tools import kto
 from app.api.schemas import (
     PlanRequest, PlanResponse, ParsedConditions, RegionCandidate,
@@ -18,8 +15,8 @@ from app.api.schemas import (
 
 router = APIRouter()
 
-# 인메모리 세션 저장소
-sessions: dict[str, dict] = {}
+# 세션 상태는 LangGraph 체크포인터(MemorySaver)가 thread_id로 관리한다.
+# (인메모리 — 서버 재시작 시 소실. 운영 전환 시 SQLite/Postgres saver로 교체)
 
 
 def _to_region_candidate(raw: dict, index: int) -> RegionCandidate:
@@ -328,23 +325,25 @@ def _to_accommodation_result(ranked: Any, work_eval, living_eval, local_eval,
 
 @router.post("/plan", response_model=PlanResponse)
 async def plan(body: PlanRequest):
-    """줄글 입력 → 생활권 후보 3개 반환."""
-    user_input, excluded_regions = await parse_raw_input(body.text)
-    interpreted = await interpret_user_input(user_input)
+    """줄글 입력 → 생활권 후보 3개 반환.
 
-    state = {**interpreted, "user_input": user_input,
-             "excluded_regions": excluded_regions, "retry_count": {}, "errors": []}
-    result = await region_search_node(state)
-
+    그래프를 시작해 human_select 노드의 interrupt에서 멈춘다.
+    멈춘 시점의 state(candidate_regions·해석 조건)를 읽어 응답한다.
+    """
     thread_id = str(uuid.uuid4())
-    sessions[thread_id] = {
-        **state,
-        "candidate_regions": result["candidate_regions"],
-    }
+    config = {"configurable": {"thread_id": thread_id}}
+
+    await graph.ainvoke(
+        {"raw_user_input": body.text, "errors": [], "warnings": [], "retry_count": {}},
+        config=config,
+    )
+    snapshot = await graph.aget_state(config)
+    values = snapshot.values
+    regions = values.get("candidate_regions", [])
 
     candidates = [
         _to_region_candidate(r, i)
-        for i, r in enumerate(result["candidate_regions"])
+        for i, r in enumerate(regions)
     ]
 
     # 지역 대표 사진(KTO) 병렬 조회 → photo_url 채움 (실패/없음은 None → 프론트 그라데이션 폴백)
@@ -359,8 +358,8 @@ async def plan(body: PlanRequest):
     return PlanResponse(
         thread_id=thread_id,
         parsed=ParsedConditions(
-            must_have=interpreted.get("must_have_conditions", []),
-            preferences=interpreted.get("preference_conditions", []),
+            must_have=values.get("must_have_conditions", []),
+            preferences=values.get("preference_conditions", []),
         ),
         candidate_regions=candidates,
     )
@@ -368,12 +367,13 @@ async def plan(body: PlanRequest):
 
 @router.post("/select-region", response_model=RecommendResponse)
 async def select_region(body: SelectRegionRequest):
-    """지역 선택 → 숙소 탐색 → 최종 추천 반환."""
-    state = sessions.get(body.thread_id)
-    if not state:
+    """지역 선택 → 그래프 재개(숙소 탐색·평가·통합) → 최종 추천 반환."""
+    config = {"configurable": {"thread_id": body.thread_id}}
+    snapshot = await graph.aget_state(config)
+    if not snapshot.values:
         raise HTTPException(status_code=404, detail="세션이 없거나 만료됐어요. 처음부터 다시 시작해주세요.")
 
-    candidate_regions = state.get("candidate_regions", [])
+    candidate_regions = snapshot.values.get("candidate_regions", [])
     selected = next(
         (r for r in candidate_regions if r.get("region_id") == body.region_id),
         candidate_regions[0] if candidate_regions else None,
@@ -381,10 +381,8 @@ async def select_region(body: SelectRegionRequest):
     if not selected:
         raise HTTPException(status_code=400, detail="선택한 지역을 찾을 수 없어요.")
 
-    state = {**state, "selected_region": selected}
-
-    # Planner Phase 2 — 오케스트레이터가 워커 선택 및 최종 출력까지 담당
-    result = await planner_phase2(state)
+    # human_select의 interrupt에 선택 지역을 주입하고 그래프를 끝까지 재개
+    result = await graph.ainvoke(Command(resume=selected), config=config)
 
     final = result.get("final_user_output")
     if not final:
@@ -422,8 +420,6 @@ async def select_region(body: SelectRegionRequest):
         candidates.append(
             _to_accommodation_result(acc, wk, lv, lc, coord_map, result.get("skipped_agents"))
         )
-
-    sessions.pop(body.thread_id, None)
 
     region_name = final.recommended_region or selected.get("region_name", "")
     return RecommendResponse(
