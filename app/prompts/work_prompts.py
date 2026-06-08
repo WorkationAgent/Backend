@@ -47,9 +47,9 @@ WORK_EVALUATE_SYSTEM = """
 숙소 주변 작업 공간 데이터와 사용자 조건을 종합해 업무 적합성을 평가합니다.
 
 [평가 흐름]
-1. 작업 공간이 0개이면: status=FAIL, total_score=0 (장소 자체가 없음)
+1. 작업 공간이 0개이면: status=FAIL, 점수 항목 모두 0 (장소 자체가 없음)
 2. must_have 조건을 확인하라.
-   - 하나라도 충족하지 못하면: status=FAIL, total_score=0
+   - 하나라도 충족하지 못하면: status=FAIL, 점수는 실제 작업공간 품질 기반으로 계산
    - 완전 충족은 아니지만 대안 공간이 존재하면: status=CONDITIONAL_PASS
 3. 모든 필수 조건이 충족되면: status=PASS, 아래 기준으로 항목별 점수를 계산하라.
 
@@ -184,7 +184,7 @@ PASS 예시:
   }}
 }}
 
-FAIL 예시 (장소 없음 또는 조건 미충족):
+FAIL 예시 (장소 없음 — 작업 공간 0개):
 {{
   "status": "FAIL",
   "total_score": 0.0,
@@ -205,6 +205,30 @@ FAIL 예시 (장소 없음 또는 조건 미충족):
     }},
     "failed_conditions": ["미술 재료 펼칠 충분한 공간"],
     "alternative": "숙소 내 공간 활용 또는 차량으로 인근 도시 공방 이동 필요"
+  }}
+}}
+
+FAIL 예시 (must_have 미충족 — 장소는 있으나 조건 불만족):
+{{
+  "status": "FAIL",
+  "total_score": 42.0,
+  "confidence": 75.0,
+  "summary": "이 숙소 주변에서는 미술 작업에 맞는 공간을 찾지 못했습니다. 다른 숙소를 추천합니다.",
+  "details": {{
+    "grade": "D",
+    "distance": "도보 15분 이내",
+    "workplace_count": 2,
+    "environment": ["Wi-Fi 제공"],
+    "risks": ["미술 재료 작업 공간 없음"],
+    "score_detail": {{
+      "place_score": 15,
+      "distance_score": 12,
+      "environment_score": 10,
+      "condition_score": 4,
+      "budget_score": 1
+    }},
+    "failed_conditions": ["미술 재료 펼칠 충분한 공간"],
+    "alternative": "차량으로 인근 도시 공방 이동 필요"
   }}
 }}
 """

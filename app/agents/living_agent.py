@@ -106,7 +106,7 @@ search_category 도구를 자율 호출해 4개 카테고리를 탐색하세요.
 
 [카테고리]
 - transport : 대중교통 (지하철역, 버스터미널, 기차역, KTX역, 시내버스 등)
-- grocery   : 식료품 (대형마트, 편의점, 전통시장, 슈퍼마켓 등)
+- grocery   : 식료품 (대형마트, 편의점, 전통시장, 슈퍼마켓 등) — kakao_codes 반드시 ["MT1","CS2"] 포함
 - medical   : 의료 (병원, 약국, 보건소 등)
 - services  : 생활서비스 (은행, ATM, 우체국, 세탁소, 헬스장)
 
@@ -439,7 +439,7 @@ async def living_agent(state: GraphState) -> GraphState:
             e for e in evaluations
             if e.details
             and (
-                (RETRY_RESULT_EMPTY and all(
+                (RETRY_RESULT_EMPTY and any(
                     e.details.get(c, {}).get("count", 0) == 0 for c in _CATS
                 ))
                 or (e.confidence is not None and e.confidence < RETRY_CONFIDENCE_THRESHOLD)

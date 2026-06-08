@@ -210,7 +210,7 @@ def _assemble_accommodations_data(
 
     result = []
     for acc in normalized:
-        acc_id = acc.get("id", "")
+        acc_id = str(acc.get("id", ""))
         w = work_map.get(acc_id)
         l = living_map.get(acc_id)
         lo = local_map.get(acc_id)
