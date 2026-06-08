@@ -106,7 +106,15 @@ async def _region_exists(region_name: str) -> bool:
 
     # 읍면동/리 없으면 시군구만 확인
     if not emd_words and not ri_words:
-        return bool(sig_codes)
+        if sig_codes:
+            return True
+        # 접미사 없는 단어도 시/군/구 이름으로 시도 (예: "남원" → "남원시" 검색)
+        for word in words:
+            if len(word) >= 2:
+                codes = await _get_codes("LT_C_ADSIGG_INFO", "sig_kor_nm", word, "sig_cd")
+                if codes:
+                    return True
+        return False
 
     return False
 
@@ -176,10 +184,29 @@ async def region_search_node(state: dict[str, Any]) -> dict[str, Any]:
             return_exceptions=True,
         )
 
+        excluded_regions: list[str] = state.get("excluded_regions", [])
+
         for candidate, has_acc in zip(candidates, results):
             if len(validated) >= 3:
                 break
             name = candidate.get("region_name", "")
+            name_clean = name.replace("생활권", "").strip()
+
+            # excluded_regions 코드 레벨 차단 — LLM이 프롬프트 무시해도 통과 불가
+            if any(ex.strip() in name_clean or name_clean in ex.strip()
+                   for ex in excluded_regions if ex.strip()):
+                failed_names.append(name)
+                continue
+
+            # 마지막 단어(읍/면/동/리) 기준 중복 제거
+            specific = name_clean.split()[-1] if name_clean else ""
+            already_seen = any(
+                v.get("region_name", "").replace("생활권", "").strip().split()[-1] == specific
+                for v in validated
+            )
+            if already_seen:
+                failed_names.append(name)
+                continue
             if has_acc is True:
                 validated.append(candidate)
             else:
@@ -267,8 +294,12 @@ async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
         acc["price"] = price if isinstance(price, str) else None
         simplified.append(acc)
 
-    # LLM에 넘길 실제 숙소 ID 목록 (환각 검증용)
-    valid_ids = {str(item.get("contentid")) for item in raw_items}
+    # LLM에는 id를 숨기고 index만 부여 — ID 환각 원천 차단
+    indexed = []
+    for i, acc in enumerate(simplified):
+        entry = {k: v for k, v in acc.items() if k != "id"}
+        entry["index"] = i + 1
+        indexed.append(entry)
 
     # LLM으로 점수화 → 상위 3개 선별
     text = await call_llm(
@@ -278,25 +309,30 @@ async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
                 region_name=region_name,
                 parsed_preferences=json.dumps(parsed, ensure_ascii=False, indent=2),
                 must_have="\n".join(must_have),
-                accommodations_with_reviews=json.dumps(simplified, ensure_ascii=False, indent=2),
+                total_count=len(indexed),
+                accommodations_with_reviews=json.dumps(indexed, ensure_ascii=False, indent=2),
             ),
         }],
         system=ACCOMMODATION_SCORE_SYSTEM,
         max_tokens=3000,
     )
 
-    ranked: list[dict] = json.loads(text)
+    llm_result: list[dict] = json.loads(text)
 
-    # 환각 방지: API 원본 데이터로 이름·주소 덮어씌우기
-    id_to_simplified = {str(item.get("contentid")): item for item in raw_items}
+    # index → 실제 데이터 매핑 (LLM이 생성한 ID/이름 완전 무시)
+    index_to_simplified = {i + 1: acc        for i, acc in enumerate(simplified)}
+    index_to_raw        = {i + 1: raw_items[i] for i in range(len(simplified))}
+
     verified = []
-    for r in ranked:
-        original = id_to_simplified.get(str(r.get("id")))
-        if not original:
-            continue  # API에 없는 ID → 환각, 제거
-        # 이름·주소는 반드시 원본 데이터로 덮어씌움 (LLM 변조 방지)
-        r["name"]    = original.get("title", r.get("name", ""))
-        r["address"] = f"{original.get('addr1','')} {original.get('addr2','')}".strip()
+    for r in llm_result:
+        idx = r.get("index")
+        if not isinstance(idx, int) or idx not in index_to_simplified:
+            continue  # 범위 벗어난 index → 환각, 무시
+        real_acc = index_to_simplified[idx]
+        real_raw = index_to_raw[idx]
+        r["id"]      = real_acc["id"]
+        r["name"]    = real_raw.get("title", real_acc.get("name", ""))
+        r["address"] = f"{real_raw.get('addr1','')} {real_raw.get('addr2','')}".strip()
         verified.append(r)
 
     if not verified:
@@ -307,9 +343,10 @@ async def accommodation_search_node(state: dict[str, Any]) -> dict[str, Any]:
     ranked = verified
 
     # 원본 데이터에서 좌표·이미지·연락처 보강
-    id_to_raw = {str(item.get("contentid")): item for item in raw_items}
+    # id는 이미 index 매핑으로 실제값이 보장되므로 직접 조회 가능
+    contentid_to_raw = {str(item.get("contentid")): item for item in raw_items}
     for item in ranked:
-        raw = id_to_raw.get(str(item.get("id")), {})
+        raw = contentid_to_raw.get(str(item.get("id")), {})
         item["image_url"] = raw.get("firstimage") or None
         item["homepage"]  = raw.get("homepage") or None
         item["tel"]       = raw.get("tel") or None
