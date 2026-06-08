@@ -47,6 +47,7 @@ from app.schemas.user_input import UserInput
 from app.schemas.worker import WorkEvaluation
 from app.tools.place_tool import is_car_transport, search_workplaces
 from app.tools.search_tool import search_workplace_reviews
+from app.tools.rag import retrieve_work_context
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ async def _evaluate_workplaces_llm(
     must_have: list[str],
     prefer: list[str],
     workplaces: list[dict],
+    regional_context: list[dict] | None = None,
 ) -> dict:
     """작업 공간 데이터 → 업무 환경 종합 평가."""
     try:
@@ -112,6 +114,10 @@ async def _evaluate_workplaces_llm(
                 must_have="\n".join(must_have) if must_have else "없음",
                 prefer="\n".join(prefer) if prefer else "없음",
                 workplaces_json=json.dumps(workplaces, ensure_ascii=False, indent=2),
+                regional_context_json=(
+                    json.dumps(regional_context, ensure_ascii=False, indent=2)
+                    if regional_context else "(없음)"
+                ),
             )}],
             system=WORK_EVALUATE_SYSTEM,
             max_tokens=2000,
@@ -139,6 +145,7 @@ async def _process_one_accommodation(
     search_keywords: list[str],
     transport_str: str,
     by_car: bool,
+    regional_context: list[dict] | None = None,
 ) -> tuple[WorkEvaluation, list[str], bool]:
     """숙소 1개 처리. 반환: (WorkEvaluation, warnings, retried)"""
     acc_id = str(accommodation.get("id", ""))
@@ -160,7 +167,7 @@ async def _process_one_accommodation(
         workplaces = _enrich_with_reviews(workplaces, region_name=region_name)
 
     eval_result = await _evaluate_workplaces_llm(
-        acc_id, parsed_preferences, must_have, prefer, workplaces
+        acc_id, parsed_preferences, must_have, prefer, workplaces, regional_context
     )
     confidence = eval_result.get("confidence") or 0.0
 
@@ -177,7 +184,7 @@ async def _process_one_accommodation(
         if retry_workplaces:
             retry_workplaces = _enrich_with_reviews(retry_workplaces, region_name=region_name)
             eval_result = await _evaluate_workplaces_llm(
-                acc_id, parsed_preferences, must_have, prefer, retry_workplaces
+                acc_id, parsed_preferences, must_have, prefer, retry_workplaces, regional_context
             )
             confidence = eval_result.get("confidence") or 0.0
             workplaces = retry_workplaces
@@ -207,12 +214,14 @@ async def _process_one_accommodation(
     details = eval_result.get("details", {})
     details["status"] = final_status
     details["places"] = places_for_list
-    # 실제 사용한 검색 반경(km) 기록 — 재시도 시 확장값, 아니면 기본값
-    _base_km = SEARCH_RADIUS_CAR_KM if by_car else SEARCH_RADIUS_WALK_KM
-    details["search_radius_km"] = round(
-        (SEARCH_RADIUS_CAR_KM * 1.5 if by_car else SEARCH_RADIUS_WALK_KM * 2.0) if retried else _base_km,
-        1,
+    # 실제 사용한 검색 반경 기록 — 미터 기준(_M)으로 계산해 검색 반경과 일치시킨다.
+    # 초기 반경은 search_workplaces 기본값(_M)과, 재시도 확장은 위 expanded 계산과 동일.
+    _base_m = SEARCH_RADIUS_CAR_M if by_car else SEARCH_RADIUS_WALK_M
+    radius_used_m = (
+        (SEARCH_RADIUS_CAR_M * 1.5 if by_car else SEARCH_RADIUS_WALK_M * 2.0)
+        if retried else _base_m
     )
+    details["search_radius_km"] = round(radius_used_m / 1000, 1)
 
     evaluation = WorkEvaluation(
         accommodation_id=acc_id,
@@ -241,11 +250,20 @@ async def work_agent(state: GraphState) -> dict:
     # LLM으로 검색 키워드 생성 (숙소 루프 전 1회)
     search_keywords = await _generate_search_keywords_llm(user_input.work_style, must_have)
 
+    # 지역 워케이션 맥락 RAG — 지역 단위라 숙소 루프 전 1회 조회 (없으면 [] → 무시됨)
+    work_context = await retrieve_work_context(
+        region=region_name,
+        user_hints=[user_input.work_style or "", "워케이션 원격근무 코워킹 장기체류"],
+        top_k=5,
+    )
+    work_context_dicts = [c.model_dump() for c in work_context]
+
     # 숙소 병렬 처리
     results = await asyncio.gather(*[
         _process_one_accommodation(
             acc, parsed_preferences, must_have, prefer,
             region_name, search_keywords, transport_str, by_car,
+            work_context_dicts,
         )
         for acc in accommodations
     ])

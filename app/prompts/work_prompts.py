@@ -118,6 +118,11 @@ workplaces 목록의 일부 장소에는 "reviews" 필드(네이버 블로그 �
   · "조용하다", "오래 작업했다" → quiet 조건 충족으로 판단 가능
 - 후기가 없으면: amenity 추정값(wifi, quiet 등)만으로 판단하라.
 
+[지역 워케이션 맥락 활용]
+입력의 '지역 워케이션 맥락(RAG)'은 그 지역 전반의 원격근무·코워킹·작업 카페 문화·장기체류 여건을 설명한다.
+- environment_score·condition_score의 '배경 판단'에만 참고하고, 개별 workplaces 데이터를 항상 우선하라.
+- 맥락에 없는 사실은 지어내지 마라. 비어 있으면 무시하라.
+
 [데이터 정확성 원칙]
 - distance 필드: workplaces의 실제 distance_min 값만 사용하라. 없으면 빈 문자열.
 - workplace_count: workplaces 목록의 실제 개수를 그대로 써라.
@@ -157,6 +162,9 @@ WORK_EVALUATE_USER = """
 
 [주변 작업 공간 목록]
 {workplaces_json}
+
+[지역 워케이션 맥락 (RAG, 참고용)]
+{regional_context_json}
 
 [반환 형식] JSON만 반환
 
