@@ -36,6 +36,14 @@ async def local_agent(state: dict) -> dict:
     user_input: UserInput = state["user_input"]
     stay_dates = state.get("parsed_preferences", {}).get("stay_dates")
 
+    # RAG 지역 정합 — _collect_signals가 accommodation["region"]으로 retrieve_regional_context를
+    # 호출하므로, 선택된 지역명을 각 숙소에 채워 같은 지역 컨텍스트만 검색되게 한다.
+    region_name = state.get("selected_region", {}).get("region_name", "")
+    if region_name:
+        for acc in accommodations:
+            if not acc.get("region"):
+                acc["region"] = region_name
+
     # 해석된 조건을 평가에 직접 전달
     conditions = {
         "must_have":   state.get("must_have_conditions") or [],
