@@ -324,6 +324,8 @@ async def build_final_output(
     final.ranked_accommodations.sort(key=lambda x: x.total_score, reverse=True)
     for i, acc in enumerate(final.ranked_accommodations):
         acc.rank = i + 1
+        # 좌표 없는 map_points 제거 (LLM이 null 좌표를 넣는 경우 방어)
+        acc.map_points = [p for p in acc.map_points if p.latitude is not None and p.longitude is not None]
 
     return final
 
