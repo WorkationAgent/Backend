@@ -7,8 +7,8 @@ class MapPoint(BaseModel):
     """지도에 표시될 위치 (숙소/작업/인프라/지역경험)"""
     name: str
     category: Literal["stay", "work", "infra", "experience"]
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     description: Optional[str] = None
 
 

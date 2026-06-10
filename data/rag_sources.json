@@ -1,0 +1,11 @@
+{
+  "_README": "출처 URL 목록. 빌더(scripts/build_rag_index.py)가 각 URL 본문을 받아 LLM으로 facet 청크로 정제해 적재한다. 재실행 시 같은 URL 청크는 교체된다(idempotent). 주의: 자바스크립트로 렌더링되는 페이지(SPA)는 본문 추출이 안 될 수 있어 정적/기사형 페이지를 권장한다.",
+  "_HOWTO": "① 특정 시·군·구에 대한 글 → 해당 지역 키 배열에 URL 추가(그 지역으로 태깅). ② 여러 지역/도 단위를 다루는 글(웹잡지·전국 예약·전남 정보 등) → '_multi' 배열에 URL 추가(LLM이 청크마다 시군구 판별). _multi는 전체 빌드 또는 `--multi-only`로 실행된다.",
+  "_multi": ["http://worcation.ijnto.or.kr/program/list/", "https://rda.go.kr/webzine/2025/11/sub_42.html", "https://dearmonday.io/reservation/list"],
+  "제주시": [],
+  "서귀포시": [],
+  "강릉시": [],
+  "양양군": [],
+  "남해군": [],
+  "경주시": []
+}

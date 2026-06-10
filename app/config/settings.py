@@ -77,6 +77,18 @@ MEDICAL_PHARMACIES_XLSX: str = str(
     _pathlib.Path(__file__).parent.parent.parent / "data" / "medical_pharmacies.xlsx"
 )
 
+# ── RAG 벡터스토어 (지역 특색/워케이션 맥락) ───────────────────
+RAG_CHROMA_DIR: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "rag_chroma"
+)
+RAG_SEED_JSON: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "rag_seed.json"
+)
+RAG_SOURCES_JSON: str = str(
+    _pathlib.Path(__file__).parent.parent.parent / "data" / "rag_sources.json"
+)
+RAG_COLLECTION: str = "regional_context"
+
 # ── 재호출 기준 ───────────────────────────────────────────────
 RETRY_CONFIDENCE_THRESHOLD: int = 54    # confidence 54 이하면 재호출
 RETRY_RESULT_EMPTY: bool = True         # 결과가 0개면 재호출
