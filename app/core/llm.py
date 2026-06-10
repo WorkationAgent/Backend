@@ -146,7 +146,7 @@ async def call_llm_with_tools(
             model=LLM_MODEL,
             messages=msgs,
             tools=oai_tools,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             parallel_tool_calls=True,
         )
         choice = resp.choices[0]

@@ -27,7 +27,7 @@ PO3 — 우체국
 
 ## kakao_keywords / naver_keywords
 카테고리 코드로 분류되지 않는 시설은 키워드 검색으로 탐색합니다.
-예) 기차역, KTX역, 재래시장, 전통시장, 세탁소, 헬스장, 편의시설 등
+예) 기차역, KTX역, 재래시장, 전통시장, 세탁소, 코인세탁소, 셀프빨래방, 편의시설 등
 
 kakao_keywords: Kakao 키워드 검색 (위치 기반 반경 검색 지원)
 naver_keywords: Naver 키워드 검색 (kakao_keywords와 중복 없이 보완적으로 구성)

@@ -1,14 +1,25 @@
 from __future__ import annotations
-from typing import TypedDict, Dict, Any, List
+
+import operator
+from typing import Annotated, Any, Dict, List, TypedDict
 
 from app.schemas.user_input import UserInput
 from app.schemas.worker import WorkEvaluation, LivingEvaluation, LocalEvaluation
 from app.schemas.output import FinalOutput
 
 
-class GraphState(TypedDict):
-    # 1. 사용자 원본 입력
+def _merge_dict(existing: Dict[str, int] | None, new: Dict[str, int] | None) -> Dict[str, int]:
+    """retry_count 등 dict 채널 병합 리듀서. 병렬 노드의 부분 갱신을 합친다."""
+    return {**(existing or {}), **(new or {})}
+
+
+class GraphState(TypedDict, total=False):
+    # 0. 그래프 진입 입력
+    raw_user_input: str
+
+    # 1. 사용자 원본 입력 (파싱 결과)
     user_input: UserInput
+    excluded_regions: List[str]
 
     # 2. Planner가 해석한 조건
     parsed_preferences: Dict[str, Any]
@@ -21,28 +32,21 @@ class GraphState(TypedDict):
     candidate_regions: List[Dict[str, Any]]
     selected_region: Dict[str, Any]
     candidate_accommodations: List[Dict[str, Any]]
-    normalized_accommodations: List[Dict[str, Any]]
 
-    # 4. Sub Agent 평가 결과
+    # 4. Sub Agent 평가 결과 (병렬 워커가 각자 다른 키에 기록)
     work_evaluations: List[WorkEvaluation]
     living_evaluations: List[LivingEvaluation]
     local_evaluations: List[LocalEvaluation]
 
-    # 5. Planner 통합 결과
-    integrated_scores: List[Dict[str, Any]]
-    ranked_recommendations: List[Dict[str, Any]]
+    # 5. 동적 워커 디스패치 — 실행하지 않은 워커의 사유
+    skipped_agents: Dict[str, str]
 
-    # 6. 재호출 판단용 상태
-    evaluation_status: Dict[str, str]
-    missing_information: List[Dict[str, Any]]
-    retry_count: Dict[str, int]
-    # retry_history: List[Dict[str, Any]]
-    # retry_requests: List[Dict[str, Any]]
+    # 6. 재호출 판단용 상태 — 병렬 워커가 동시 갱신 → 병합 리듀서
+    retry_count: Annotated[Dict[str, int], _merge_dict]
 
     # 7. 최종 출력
     final_user_output: FinalOutput
-    # final_eval_output: Dict[str, Any]
 
-    # 8. 오류/주의사항
-    errors: List[str]
-    warnings: List[str]
+    # 8. 오류/주의사항 — 병렬 워커가 동시 append → 연결 리듀서
+    errors: Annotated[List[str], operator.add]
+    warnings: Annotated[List[str], operator.add]

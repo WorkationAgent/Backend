@@ -7,6 +7,8 @@ class PlaceItem(BaseModel):
     dist_m: float = 0.0
     category: str = ""
     is_signature: bool = False    # 지역 대표 명소 여부 (KTO areaBased/RAG 출처)
+    latitude: float | None = None   # 지도 핀용 좌표 (코드가 원본 장소에서 매칭해 채움)
+    longitude: float | None = None
 
 
 class DimensionScores(BaseModel):

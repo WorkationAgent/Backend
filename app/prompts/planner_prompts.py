@@ -53,9 +53,16 @@ PARSE_RAW_USER = """
 }}
 
 [excluded_regions 규칙]
-- "제주시는 싫어", "강원도 제외", "서울 말고" 같은 명시적 지역 거부를 포함한 배열
+- "제주시는 싫어", "강원도 제외", "서울 말고", "제주도는 빼줘" 같은 명시적 지역 거부를 포함한 배열
 - 언급이 없으면 빈 배열 []
 - 반드시 실제 행정구역명으로 표기 (시·도·군·구·읍·면 단위)
+
+[work_required 규칙 — 중요]
+- "언급되지 않은 항목은 null" 규칙의 예외입니다.
+- purpose가 "워케이션"이면 작업한다는 말을 따로 하지 않았어도 work_required=true.
+  (워케이션 = 워크 + 베케이션이므로 작업이 전제입니다.)
+- "일 안 할 거야" 처럼 작업을 명시적으로 거부한 경우에만 false.
+- 그 외 작업 관련 언급이 전혀 없으면 null.
 """
 
 INTERPRET_SYSTEM = """
@@ -100,10 +107,9 @@ INTERPRET_USER = """
   "preference_conditions": ["있으면 좋은 조건 (문장 형태)"],
   "priority_weights": {{
     "work": 0.30,
-    "living": 0.25,
-    "transport": 0.20,
-    "accommodation": 0.15,
-    "local": 0.10
+    "living": 0.30,
+    "accommodation": 0.25,
+    "local": 0.15
   }}
 }}
 
@@ -118,17 +124,18 @@ INTERPRET_USER = """
 작성 기준:
 
 [must_have — 핵심 원칙]
-- "지역이 바다 근처여야 한다" 같은 지역 희망은 must_have가 아님 → parsed_preferences에 넣을 것
-- must_have는 숙소·서비스 조건만: "반려견 동반 가능 숙소", "카페 작업 가능 환경", "대중교통 도보 15분 이내"
+- must_have 기준: 사용자가 명시적으로 요구하거나("꼭", "필수", "없으면 안 돼"), 없으면 선택 자체가 불가능한 조건
+- 카테고리 제한 없음 — 숙소, 예산, 시설, 지역 특성, 액티비티, 교통 등 모든 조건 포함 가능
 - 동행이 반려동물이면 반드시: "반려견/반려동물 입실 가능 숙소"를 must_have에 포함
-- 작업 필요하면: "Wi-Fi·콘센트 완비된 카페 또는 작업 공간"을 must_have에 포함
-- must_have는 3개 이내로 핵심만 (많으면 재호출이 잦아짐)
+- 작업 필요하면: "Wi-Fi·콘센트 완비된 작업 가능 환경"을 must_have에 포함
+- "있으면 좋겠다", "가능하면" 등 강도가 약한 희망사항은 must_have가 아닌 preference_conditions에 넣을 것
 
 [priority_weights — 반드시 지킬 규칙]
-- 5개 합이 정확히 1.0
+- 4개 합이 정확히 1.0 (transport는 별도 항목 없음 — living에 포함)
+- living은 생활 인프라 + 교통 접근성을 함께 반영; 이동 방식(뚜벅이/자차)이 핵심 조건이면 living 가중치를 높게 설정
 - work_required=false 또는 "일 안 할거야" → work: 0.00
 - work_required=true 또는 워케이션 → work: 0.25~0.35
-- "관광 안 할거야", "그냥 쉬러가요" 명시적 거부 → local: 0.00
+- "관광 안 할거야" 명시적 거부 → local: 0.00
 - tourism_hobby가 서핑·맛집·액티비티처럼 구체적이고 중요할 때 → local: 0.20~0.30
 - tourism_hobby가 산책처럼 가볍거나 부차적 → local: 0.05~0.15
 - tourism_hobby=None + 휴식 목적 → local: 0.00~0.05
@@ -168,7 +175,7 @@ Work · Living · Local 세 Agent의 평가 결과를 종합해 사용자에게 
 | local_summary | Local Agent 평가 1~2문장 요약 |
 | work_environment | 주변 작업 공간 목록 — EvaluatedItem(name, description, distance_text) |
 | living_elements | 주변 생활 인프라 목록 — EvaluatedItem(name, description, distance_text) |
-| local_experiences | 주변 로컬 경험 목록 (5개 내외로 풍부하게) — EvaluatedItem(name, description, distance_text) |
+| local_experiences | 주변 로컬 경험 목록 (5개 내외로 풍부하게) — EvaluatedItem(name, description, distance_text). **local_eval.details의 matched_hobbies·daily_spots 중 사용자 취미와 직접 매칭되는 장소(예: 서핑 강습소·서핑샵)는 반드시 1개 이상 포함할 것** |
 
 - distance_text: 숙소로부터의 이동거리/시간을 사람이 읽는 문구로. 도보권이면 "도보 N분", 차량이면 "차 N분", 애매하면 "약 Nm". 입력 details의 dist_m·distance_meters·nearest_minutes 등 거리 정보를 근거로 작성. 거리 정보가 없으면 생략(빈 값).
 | map_points | 숙소 1개 + 주요 작업·인프라·경험 위치 — MapPoint(name, category, latitude, longitude, description) |

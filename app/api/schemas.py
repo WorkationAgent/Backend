@@ -59,12 +59,24 @@ class EvaluationSection(BaseModel):
     score: float = 0.0
     summary: str = ""
     items: list[EvaluatedItem] = []
+    search_radius_m: Optional[float] = None   # 이 에이전트가 사용한 검색 반경(m)
+    skipped: bool = False                      # 필요 없어서 미실행 여부
+    skip_reason: str = ""                      # 미실행 사유 안내 문구
 
 
 class CategoryScores(BaseModel):
     work: float = 0.0
     living: float = 0.0
     local: float = 0.0
+
+
+class LivingCategoryItem(BaseModel):
+    """Living 생활 인프라 — 카테고리별 대표 장소 1곳."""
+    category: str            # transport / grocery / medical / services
+    label: str               # 교통 / 식료품 / 의료 / 서비스
+    name: str = ""           # 대표 장소명 (없으면 "")
+    distance_text: str = ""  # "도보 N분" 등
+    found: bool = False
 
 
 class AccommodationInfo(BaseModel):
@@ -84,6 +96,7 @@ class AccommodationResult(BaseModel):
     map_points: list[MapPoint] = []
     category_scores: CategoryScores
     sections: dict[str, EvaluationSection]   # work / living / local
+    living_categories: list[LivingCategoryItem] = []   # Living 카테고리별 대표 장소
     accommodation_info: Optional[AccommodationInfo] = None   # 가격/연락처/홈페이지
 
 

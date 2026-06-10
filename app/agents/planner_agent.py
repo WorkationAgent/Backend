@@ -1,31 +1,23 @@
 """
-Planner Agent — 전체 파이프라인을 조율하는 Supervisor Agent.
+Planner — 파이프라인의 Planner 단계 로직 모음.
 
-Phase 1 (planner_phase1):
-    UserInput → 5개 조건 해석 (미구현, 호출자가 state에 미리 채워야 함)
-    → Stay Agent: 지역 후보 3개 검색
-    쓰기: candidate_regions
+이 모듈은 더 이상 직접 오케스트레이션하지 않는다. 실제 흐름 제어는
+LangGraph 그래프(app/graph/workflow.py)가 담당하고, 여기서는 각 그래프
+노드가 호출하는 순수 함수만 제공한다:
 
-Phase 2 (planner_phase2):  (사용자 지역 선택 후 재개)
-    → Stay Agent: 숙소 3개 검색
-    → normalize_accommodations: mapx/mapy → lat/lng 변환
-    → Living / Work / Local Agent 병렬 실행
-    → integrate_scores: 점수 통합 및 순위 (미구현)
-    쓰기: candidate_accommodations, normalized_accommodations,
-          living_evaluations, work_evaluations, local_evaluations,
-          errors, warnings, retry_count
+  - parse_raw_input          : 줄글 → UserInput + excluded_regions
+  - interpret_user_input     : UserInput → 조건 해석 + priority_weights
+  - normalize_accommodations : Stay 출력 → 워커 공통 포맷
+  - select_workers /
+    build_skipped_agents     : 동적 워커 디스패치 결정
+  - build_final_output       : 평가 통합 → 최종 추천 순위
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Optional
 
-from app.agents.living_agent import living_agent
-from app.agents.local_agent import local_agent, evaluate_accommodations
-from app.agents.stay_agent import accommodation_search_node, region_search_node
-from app.agents.work_agent import work_agent
 from app.core.llm import call_llm
 from app.core.state import GraphState
 from app.prompts.planner_prompts import (
@@ -49,11 +41,18 @@ async def parse_raw_input(raw_text: str) -> tuple[UserInput, list[str]]:
     data = json.loads(text)
     excluded_regions: list[str] = data.pop("excluded_regions", []) or []
     cleaned = {k: v for k, v in data.items() if v is not None and v != "null"}
-    return UserInput(**cleaned), excluded_regions
+    ui = UserInput(**cleaned)
+
+    # 워케이션은 정의상 작업이 전제 — 명시적 거부가 없으면 work_required=true 보장.
+    # (프롬프트 추론이 누락돼도 결정적으로 보정하는 안전망)
+    if ui.work_required is None and ui.purpose and "워케이션" in ui.purpose:
+        ui.work_required = True
+
+    return ui, excluded_regions
 
 
 async def interpret_user_input(user_input: UserInput) -> dict:
-    """UserInput → 5개 조건 해석 (parsed_preferences, must/avoid/preference_conditions, priority_weights)."""
+    """UserInput → 조건 해석 (parsed_preferences, must/avoid/preference_conditions, priority_weights)."""
     text = await call_llm(
         messages=[{"role": "user", "content": INTERPRET_USER.format(
             purpose=user_input.purpose or "미입력",
@@ -78,19 +77,12 @@ async def interpret_user_input(user_input: UserInput) -> dict:
     )
     result = json.loads(text)
     weights = result.get("priority_weights", {})
+    weights.pop("transport", None)  # transport는 living 내부 평가로 처리
 
     # ── 명시적 신호 보정 ────────────────────────────────────────
     # Work
-    if user_input.work_required is False or user_input.work_required is None:
+    if user_input.work_required is False:
         weights["work"] = 0.0
-
-    # Local — tourism_hobby 없고 휴식형이면 0
-    if not user_input.tourism_hobby:
-        purpose = (user_input.purpose or "").lower()
-        if any(kw in purpose for kw in ["휴식", "쉬", "촌캉스", "rest", "vacation"]):
-            weights["local"] = 0.0
-        else:
-            weights["local"] = min(weights.get("local", 0.1), 0.05)
 
     # Living — 단기(5일 이하)면 낮추기
     duration = (user_input.duration or "").lower()
@@ -162,92 +154,34 @@ def normalize_accommodations(stay_output: list[dict]) -> list[dict]:
     return result
 
 
-# ── Phase 1: 지역 검색 ────────────────────────────────────────────────────────
+# ── 동적 워커 디스패치 (오케스트레이터-워커) ────────────────────────────────
 
-async def planner_phase1(state: GraphState) -> dict:
-    """줄글 입력 → 구조화 → 5개 조건 해석 → Stay Agent 지역 후보 탐색."""
-    raw_text: str = state.get("raw_user_input", "")
-    user_input, excluded_regions = await parse_raw_input(raw_text)
-    interpreted = await interpret_user_input(user_input)
-    state = {**state, "user_input": user_input, "excluded_regions": excluded_regions, **interpreted}
-    region_result = await region_search_node(state)
-    return {"user_input": user_input, "excluded_regions": excluded_regions, **interpreted, **region_result}
+# priority_weights가 이 임계값을 초과하는 워커만 실행한다.
+WORKER_WEIGHT_THRESHOLD = 0.05
+
+# 가중치 미지정 시 기본값 (planner_phase2의 기존 동작 보존)
+_WORKER_WEIGHT_DEFAULTS = {"work": 0.0, "living": 0.25, "local": 0.10}
+
+_SKIP_REASONS = {
+    "work":   "워케이션(원격근무) 요청이 아니어서 작업 환경은 평가하지 않았어요.",
+    "living": "생활 인프라 우선순위가 낮아 평가하지 않았어요.",
+    "local":  "관광·로컬 경험 우선순위가 낮아 평가하지 않았어요.",
+}
 
 
-# ── Phase 2: 숙소 검색 → 정규화 → 평가 ──────────────────────────────────────
+def select_workers(priority_weights: dict) -> list[str]:
+    """priority_weights 기준으로 실행할 워커 이름 목록(work/living/local)을 반환."""
+    return [
+        name
+        for name, default in _WORKER_WEIGHT_DEFAULTS.items()
+        if (priority_weights or {}).get(name, default) > WORKER_WEIGHT_THRESHOLD
+    ]
 
-async def planner_phase2(state: GraphState) -> dict:
-    """숙소 검색부터 최종 평가까지 전체를 조율한다."""
 
-    # 1. Stay Agent: 숙소 검색
-    acc_result = await accommodation_search_node(state)
-    state = {**state, **acc_result}
-
-    # 2. 정규화: mapx/mapy → latitude/longitude (통일된 단일 포맷으로)
-    raw = state.get("candidate_accommodations") or []
-    if not raw:
-        # 숙소 없으면 즉시 반환 — LLM 호출 없이 (환각 방지)
-        return {
-            "candidate_accommodations": [],
-            "errors": list(state.get("errors") or []) + ["해당 지역에서 실제 숙소를 찾지 못했습니다."],
-            "warnings": list(state.get("warnings") or []),
-            "retry_count": dict(state.get("retry_count") or {}),
-        }
-
-    normalized = normalize_accommodations(raw)
-    state = {**state, "candidate_accommodations": normalized}  # normalized로 통일
-
-    # 3. 동적 워커 선택 (오케스트레이터-워커)
-    errors: list  = list(state.get("errors") or [])
-    warnings: list = list(state.get("warnings") or [])
-    retry_count   = dict(state.get("retry_count") or {})
-
-    user_input = state.get("user_input")
-    priority_weights = state.get("priority_weights", {})
-
-    run_work   = getattr(user_input, "work_required", None) is True
-    run_living = priority_weights.get("living", 0.25) > 0.05
-    run_local  = priority_weights.get("local", 0.10) > 0.05
-
-    worker_state = state  # 이미 normalized로 업데이트된 state 사용
-
-    coros = []
-    if run_living: coros.append(living_agent(worker_state))
-    if run_work:   coros.append(work_agent(worker_state))
-    if run_local:  coros.append(local_agent(worker_state))
-
-    raw_results = await asyncio.gather(*coros, return_exceptions=True)
-
-    merged: dict = {
-        "candidate_accommodations": normalized,
-    }
-    for raw_r in raw_results:
-        if isinstance(raw_r, Exception):
-            errors.append(str(raw_r))
-            continue
-        errors.extend(raw_r.get("errors") or [])
-        warnings.extend(raw_r.get("warnings") or [])
-        for k, v in (raw_r.get("retry_count") or {}).items():
-            retry_count[k] = v
-        for k, v in raw_r.items():
-            if k not in ("errors", "warnings", "retry_count",
-                         "candidate_accommodations"):
-                merged[k] = v
-
-    # 4. 최종 추천 순위 생성
-    try:
-        final_output = await build_final_output(
-            normalized=normalized,
-            work_evals=merged.get("work_evaluations", []),
-            living_evals=merged.get("living_evaluations", []),
-            local_evals=merged.get("local_evaluations", []),
-            state=state,
-        )
-        merged["final_user_output"] = final_output
-    except Exception as e:
-        errors.append(f"planner: build_final_output 실패 — {e}")
-
-    return {**merged, "errors": errors, "warnings": warnings, "retry_count": retry_count}
+def build_skipped_agents(priority_weights: dict) -> dict[str, str]:
+    """실행하지 않는 워커의 사유 문구(프론트 섹션 안내용)."""
+    active = set(select_workers(priority_weights))
+    return {name: msg for name, msg in _SKIP_REASONS.items() if name not in active}
 
 
 # ── 최종 출력 생성 ────────────────────────────────────────────────────────────
@@ -276,7 +210,7 @@ def _assemble_accommodations_data(
 
     result = []
     for acc in normalized:
-        acc_id = acc.get("id", "")
+        acc_id = str(acc.get("id", ""))
         w = work_map.get(acc_id)
         l = living_map.get(acc_id)
         lo = local_map.get(acc_id)
@@ -376,6 +310,7 @@ async def build_final_output(
         messages=[{"role": "user", "content": user_msg}],
         system=FINAL_OUTPUT_SYSTEM,
         output_schema=FinalOutput,
+        max_tokens=8192,   # 숙소 3개 × 풍부한 항목 → 4096이면 JSON이 잘려 파싱 실패
     )
 
     # LLM이 total_score를 임의로 생성하지 못하도록 코드 계산값으로 강제 덮어씌우기

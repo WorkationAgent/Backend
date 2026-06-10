@@ -94,13 +94,28 @@ def build_user_prompt(
     blog_snippets: list,
     regional_context: list,   # RAG 지역 특색
     search_radius_used_km: float,
+    must_have_conditions: list | None = None,    # 해석된 필수 조건
+    avoid_conditions: list | None = None,        # 해석된 회피 조건
+    preference_conditions: list | None = None,   # 해석된 선호 조건
 ) -> str:
     """LLM에게 넘길 user message 구성."""
+    def _fmt(items: list | None) -> str:
+        items = [i for i in (items or []) if i]
+        return "\n".join(f"  - {i}" for i in items) if items else "  (없음)"
+
     return f"""# 평가 대상 숙소
 {json.dumps(accommodation, ensure_ascii=False, indent=2)}
 
 # 사용자 조건 (purpose를 분류하지 말고 모든 신호를 종합해 가중치를 선택할 것)
 {json.dumps(user_input, ensure_ascii=False, indent=2)}
+
+# 해석된 사용자 조건 — 평가에 반드시 반영할 것
+[필수(must-have)] 반드시 충족돼야 하는 조건
+{_fmt(must_have_conditions)}
+[회피(avoid)] 이런 성격의 장소·환경은 signature_spots/daily_spots에서 빼고, access·fit을 감점
+{_fmt(avoid_conditions)}
+[선호(preference)] 충족하면 fit 가점
+{_fmt(preference_conditions)}
 
 # 검색에 사용한 반경
 {search_radius_used_km} km
@@ -129,12 +144,17 @@ def build_user_prompt(
 
 위 정보를 바탕으로 LocalEvaluation 스키마에 맞춰 출력하세요.
 
+**해석된 조건 반영 규칙:**
+- 회피(avoid) 조건에 해당하는 장소·분위기는 signature_spots/daily_spots에 넣지 말고, access·fit을 낮춘다.
+- 필수(must-have)·선호(preference) 충족 여부를 fit 차원과 summary에 반영한다.
+
 - score, confidence: 0~100 사이 숫자
 - summary: 한국어 2~3문장, "이 지역에서 무엇을 뿌릴 수 있는지" 중심
 - details에 반드시 포함할 키:
   - signature_spots:   [PlaceItem] → 지역 대표 명소 중 의미·접근성 기준 **상위 5개** (is_signature=true)
-  - daily_spots:       [PlaceItem] → 매일 들를 카페·맛집·산책 중 **상위 5개**
-  - matched_hobbies:   [str]       → 사용자 hobby와 매칭된 항목명
+  - daily_spots:       [PlaceItem] → 매일 들를 카페·맛집·산책 중 **상위 5개**.
+                       **취향 특화 자율 검색(augmented) 결과에 사용자 hobby와 맞는 장소(예: 서핑 강습소·서핑샵·공방)가 있으면 다른 것보다 우선해 daily_spots에 반드시 포함할 것.**
+  - matched_hobbies:   [str]       → 사용자 hobby와 매칭된 항목명 (augmented에서 찾은 hobby 장소명을 반드시 포함)
   - vibe_match_note:   str         → 분위기 매칭 한 줄 평
   - dimension_scores:  {{signature, access, daily, fit}}  → 합이 score
   - dimension_weights: {{signature, access, daily, fit}}  → 합이 100, 동적 결정
